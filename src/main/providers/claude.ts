@@ -99,8 +99,10 @@ function listSlots(): PAccount[] {
     .map((d) => {
       const meta = readJson(slotMetaFile(d.name));
       const cred = readJson(slotCredFile(d.name));
+      const email = meta?.oauthAccount?.emailAddress ?? null;
       return {
         name: d.name,
+        email,
         accountId: meta?.oauthAccount?.accountUuid ?? null,
         label: labelFor(meta, cred),
       };
@@ -440,6 +442,7 @@ export const claudeProvider: Provider = {
     writeJsonAtomic(slotMetaFile(slot), { oauthAccount }, false);
     return {
       name: slot,
+      email: oauthAccount?.emailAddress ?? null,
       accountId: oauthAccount?.accountUuid ?? null,
       label: labelFor({ oauthAccount }, cred),
     };

@@ -507,13 +507,17 @@
       }
 
       function header(prov, a, st) {
-        const av = initials(a.label || a.name, "?");
+        const displayName = a.email || a.name;
+        const av = initials(displayName, "?");
         const plan = a.usage && a.usage.planType ? planLabel(prov, a.usage.planType) : "";
+        const fallbackLabel = a.email
+          ? (a.label || "").split(" · ").filter((x) => x !== a.email).join(" · ")
+          : (a.label || "");
         return `<div class="top">
           <div class="avatar ${a.active ? "active" : ""}">${av}</div>
           <div class="who">
-            <div class="name">${esc(a.name)}</div>
-            <div class="label">${esc([plan, a.usage && a.usage.email].filter(Boolean).join(" · ") || a.label || "")}</div>
+            <div class="name">${esc(displayName)}</div>
+            <div class="label">${esc(plan || fallbackLabel)}</div>
           </div>
           <span class="badge ${st.cls}">${st.text}</span>
         </div>`;

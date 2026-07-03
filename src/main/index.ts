@@ -83,6 +83,22 @@ function notify(title: string, body: string): void {
   if (Notification.isSupported()) new Notification({ title, body }).show();
 }
 
+function accountDisplayName(
+  account: PAccount | null | undefined,
+  fallback: string
+): string {
+  return account?.email || account?.name || fallback;
+}
+
+function accountDisplayLabel(account: PAccount | null | undefined): string {
+  if (!account?.label) return "";
+  if (!account.email) return account.label;
+  return account.label
+    .split(" · ")
+    .filter((part) => part !== account.email)
+    .join(" · ");
+}
+
 /** Translate with the currently configured UI language. */
 function T(key: string, vars?: Record<string, string | number>): string {
   return translate(resolveLang(cfg.language), key, vars);
@@ -139,7 +155,7 @@ function buildMenu(): Menu {
     }
     for (const a of accounts) {
       template.push({
-        label: `  ${a.name === active ? "● " : "○ "}${a.name}`,
+        label: `  ${a.name === active ? "● " : "○ "}${accountDisplayName(a, a.name)}`,
         click: () => void manualSwitch(p, a.name),
       });
     }
@@ -201,8 +217,10 @@ function refreshTray(): void {
   tray.setContextMenu(buildMenu());
   const actives = providers
     .map((p) => {
-      const a = p.activeAccountName();
-      return a ? `${p.displayName}: ${a}` : null;
+      const active = p.activeAccountName();
+      if (!active) return null;
+      const account = p.listAccounts().find((a) => a.name === active);
+      return `${p.displayName}: ${accountDisplayName(account, active)}`;
     })
     .filter(Boolean)
     .join(" · ");
@@ -214,13 +232,21 @@ async function manualSwitch(p: Provider, name: string): Promise<void> {
   if (st.switching) return;
   st.switching = true;
   try {
+    const accounts = p.listAccounts();
+    const displayName = (slot: string | null | undefined): string =>
+      slot
+        ? accountDisplayName(
+            accounts.find((a) => a.name === slot),
+            slot
+          )
+        : "?";
     // Manual switch = explicit user action; restart Desktop right away (codex).
     const res = await switchTo(p, name, prefsOf(p), { restartDesktop: true });
     notify(
       `${p.displayName} — ${T("notif.switchedTitle")}`,
       T("notif.manualSwitched", {
-        from: res.from ?? "?",
-        to: res.to,
+        from: displayName(res.from),
+        to: displayName(res.to),
         restarted: res.desktopRestarted ? T("notif.restartedSuffix") : "",
       })
     );
@@ -266,10 +292,10 @@ function askApproval(
       query: {
         lang: resolveLang(cfg.language),
         provider: p.displayName,
-        fromName: from?.name ?? "",
-        fromLabel: from?.label ?? "",
-        toName: to.name,
-        toLabel: to.label ?? "",
+        fromName: accountDisplayName(from, ""),
+        fromLabel: accountDisplayLabel(from),
+        toName: accountDisplayName(to, to.name),
+        toLabel: accountDisplayLabel(to),
         kind: reason.kind,
         windowLabel:
           reason.kind === "error"
@@ -364,7 +390,10 @@ async function handleLimit(p: Provider, reason: LimitReason): Promise<void> {
     await switchTo(p, next.name, prefs, { restartDesktop: false });
     notify(
       `${p.displayName} — ${T("notif.switchedTitle")}`,
-      T("notif.switchedBody", { from: active ?? "?", to: next.name })
+      T("notif.switchedBody", {
+        from: accountDisplayName(fromAcc, active ?? "?"),
+        to: accountDisplayName(next, next.name),
+      })
     );
   } catch (e) {
     notify(`${p.displayName} — ${T("notif.switchFailed")}`, String(e));
@@ -387,7 +416,9 @@ async function handleLimit(p: Provider, reason: LimitReason): Promise<void> {
       ? `${p.displayName} — ${T("notif.desktopRestarted")}`
       : `${p.displayName} — ${T("notif.desktopFailed")}`,
     ok
-      ? T("notif.desktopRestartedBody", { name: next.name })
+      ? T("notif.desktopRestartedBody", {
+          name: accountDisplayName(next, next.name),
+        })
       : T("notif.desktopFailedBody")
   );
 }

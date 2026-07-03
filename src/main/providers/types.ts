@@ -18,6 +18,7 @@ export interface PUsage {
 
 export interface PAccount {
   name: string;
+  email: string | null;
   accountId: string | null;
   label: string | null;
 }

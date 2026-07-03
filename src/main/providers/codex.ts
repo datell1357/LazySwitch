@@ -153,6 +153,7 @@ export const codexProvider: Provider = {
   listAccounts: (): PAccount[] =>
     listAccounts().map((a) => ({
       name: a.name,
+      email: a.email,
       accountId: a.accountId,
       label: a.label,
     })),
@@ -162,7 +163,7 @@ export const codexProvider: Provider = {
     const slot =
       name?.trim() || deriveSlotName(emailFromAuth(readAuth(liveAuthFile())));
     const a = importCurrentAs(slot);
-    return { name: a.name, accountId: a.accountId, label: a.label };
+    return { name: a.name, email: a.email, accountId: a.accountId, label: a.label };
   },
   removeAccount,
   renameAccount,

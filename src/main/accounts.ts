@@ -22,6 +22,7 @@ export interface CodexAuth {
 
 export interface Account {
   name: string;
+  email: string | null;
   accountId: string | null;
   authMode: string | null;
   /** Email/plan decoded from id_token if available. */
@@ -86,6 +87,7 @@ function labelFromAuth(auth: CodexAuth | null): string | null {
 function toAccount(name: string, auth: CodexAuth | null): Account {
   return {
     name,
+    email: emailFromAuth(auth),
     accountId: auth?.tokens?.account_id ?? null,
     authMode: auth?.auth_mode ?? null,
     label: labelFromAuth(auth),
