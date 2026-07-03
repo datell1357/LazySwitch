@@ -229,7 +229,7 @@ async function fetchUsageFor(name: string | null): Promise<PUsage | null> {
 // Add-account login flow (OAuth authorization code + PKCE)
 // ---------------------------------------------------------------------------
 
-const LOGIN_URL = "https://claude.ai/login";
+const SWITCH_ACCOUNT_URL = "https://claude.ai/logout";
 const AUTHORIZE_PATH = "/oauth/authorize";
 // Claude Code's own callback port — the only localhost redirect whitelisted
 // for CLIENT_ID. One login at a time (fixed port), same as the Codex flow.
@@ -308,14 +308,14 @@ async function addViaLogin(onUrl?: (url: string) => void): Promise<LoginFlowResu
     code_challenge_method: "S256",
     state,
   }).toString();
-  // Go through the login page with account selection instead of straight to
-  // /oauth/authorize: the direct route silently consents as whoever is already
-  // logged into claude.ai, making it impossible to add a different account.
+  // Going straight to /oauth/authorize silently consents as the current
+  // claude.ai browser session. Use the same /logout?returnTo= route as
+  // claude.ai's switch-account link so a fresh login page is guaranteed.
+  // This logs the browser out of claude.ai, matching that official link.
   const url =
-    LOGIN_URL +
+    SWITCH_ACCOUNT_URL +
     "?" +
     new URLSearchParams({
-      selectAccount: "true",
       returnTo: AUTHORIZE_PATH + "?" + authQuery,
     });
 
