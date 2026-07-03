@@ -49,6 +49,7 @@ const states = new Map<string, PState>(
     },
   ])
 );
+const pendingUsageRefreshes = new Set<string>();
 
 function prefsOf(p: Provider): ProviderPrefs {
   return cfg[p.id];
@@ -481,13 +482,22 @@ async function listWithUsage(p: Provider) {
   const st = stateOf(p);
   const active = p.activeAccountName();
   const accounts = p.listAccounts();
-  // Active account: read the LIVE auth (the CLI keeps it refreshed). Its slot
-  // copy can hold a rotated-out refresh token and 401 until the next switch.
-  const usages = await Promise.all(
-    accounts.map((a) =>
-      p.fetchUsage(a.name === active ? null : a.name).catch(() => null)
-    )
-  );
+  const usages = accounts.map((a) => {
+    const usageName = a.name === active ? null : a.name;
+    const cached = p.cachedUsage?.(usageName) ?? null;
+    const key = `${p.id}:${usageName === null ? "live" : "slot:" + usageName}`;
+    if (!pendingUsageRefreshes.has(key)) {
+      pendingUsageRefreshes.add(key);
+      void p
+        .fetchUsage(usageName)
+        .then((latest) => {
+          if (JSON.stringify(latest) !== JSON.stringify(cached)) broadcastChanged();
+        })
+        .catch(() => undefined)
+        .finally(() => pendingUsageRefreshes.delete(key));
+    }
+    return cached;
+  });
   return accounts.map((a, i) => ({
     ...a,
     active: a.name === active,

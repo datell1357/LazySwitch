@@ -9,6 +9,8 @@ const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const REFRESH_URL = "https://auth.openai.com/oauth/token";
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const REFRESH_AGE_MS = 8 * 24 * 60 * 60 * 1000; // refresh proactively after 8 days
+const USAGE_CACHE_MS = 5 * 60 * 1000;
+const DEFAULT_429_BACKOFF_MS = 5 * 60 * 1000;
 
 export interface UsageWindow {
   usedPercent: number;
@@ -23,6 +25,17 @@ export interface CodexUsage {
   planType: string | null;
   creditsBalance: number | null;
   email: string | null;
+}
+
+interface CacheEntry {
+  at: number;
+  usage: CodexUsage | null;
+}
+const usageCache = new Map<string, CacheEntry>();
+let rateLimitedUntil = 0;
+
+export function cachedUsage(file: string): CodexUsage | null {
+  return usageCache.get(file)?.usage ?? null;
 }
 
 function writeAuthAtomic(file: string, auth: CodexAuth): void {
@@ -103,6 +116,11 @@ function windowFrom(
  * more if the server returns 401.
  */
 export async function fetchUsage(file: string): Promise<CodexUsage | null> {
+  const now = Date.now();
+  const cached = usageCache.get(file);
+  if (cached && now - cached.at < USAGE_CACHE_MS) return cached.usage;
+  if (now < rateLimitedUntil) return cached?.usage ?? null;
+
   let auth = readAuth(file);
   if (!auth?.tokens?.access_token) return null;
 
@@ -129,7 +147,13 @@ export async function fetchUsage(file: string): Promise<CodexUsage | null> {
         res = await call(auth);
       }
     }
-    if (!res.ok) return null;
+    if (res.status === 429) {
+      const retry = parseInt(res.headers.get("retry-after") ?? "", 10);
+      rateLimitedUntil =
+        now + (Number.isFinite(retry) && retry >= 0 ? retry * 1000 : DEFAULT_429_BACKOFF_MS);
+      return cached?.usage ?? null;
+    }
+    if (!res.ok) return cached?.usage ?? null;
 
     const headerPrimary = num(res.headers.get("x-codex-primary-used-percent"));
     const headerSecondary = num(
@@ -139,14 +163,17 @@ export async function fetchUsage(file: string): Promise<CodexUsage | null> {
 
     const data: any = await res.json();
     const rl = data?.rate_limit ?? {};
-    return {
+    const usage = {
       primary: windowFrom(headerPrimary, rl.primary_window),
       secondary: windowFrom(headerSecondary, rl.secondary_window),
       planType: typeof data?.plan_type === "string" ? data.plan_type : null,
       creditsBalance: headerCredits ?? num(data?.credits?.balance),
       email: typeof data?.email === "string" ? data.email : null,
     };
+    usageCache.set(file, { at: now, usage });
+    rateLimitedUntil = 0;
+    return usage;
   } catch {
-    return null;
+    return cached?.usage ?? null;
   }
 }

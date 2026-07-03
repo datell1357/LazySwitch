@@ -227,6 +227,10 @@ async function fetchUsageFor(name: string | null): Promise<PUsage | null> {
   }
 }
 
+function cachedUsageFor(name: string | null): PUsage | null {
+  return usageCache.get(name ?? "@live")?.usage ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // Add-account login flow (OAuth authorization code + PKCE)
 // ---------------------------------------------------------------------------
@@ -486,6 +490,7 @@ export const claudeProvider: Provider = {
   },
 
   fetchUsage: fetchUsageFor,
+  cachedUsage: cachedUsageFor,
   addViaLogin,
 
   desktop: null, // Claude Desktop does not share CLI auth — nothing to restart

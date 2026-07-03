@@ -66,6 +66,7 @@ export interface Provider {
   // -- usage -----------------------------------------------------------
   /** Usage for a slot; name=null means the live login. */
   fetchUsage(name: string | null): Promise<PUsage | null>;
+  cachedUsage?(name: string | null): PUsage | null;
   /** Optional local-session usage fallback (Codex rollout files). */
   sessionUsage?(): { primary: PWindow | null; secondary: PWindow | null } | null;
   /** Optional reactive scan for usage-limit errors in local session logs. */

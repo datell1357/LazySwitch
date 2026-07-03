@@ -13,7 +13,7 @@ import {
   emailFromAuth,
   deriveSlotName,
 } from "../accounts";
-import { fetchUsage } from "../codex-api";
+import { cachedUsage, fetchUsage } from "../codex-api";
 import { restartDesktopApp } from "../desktop";
 import { addAccountViaLogin } from "../login";
 
@@ -28,6 +28,13 @@ function atomicCopy(src: string, dest: string): void {
 // ---------------------------------------------------------------------------
 // Session-file scanning (moved verbatim from monitor.ts — Codex-specific).
 // ---------------------------------------------------------------------------
+
+const SESSION_SCAN_CACHE_MS = 60 * 1000;
+type SessionScanResult = {
+  usage: { primary: PWindow | null; secondary: PWindow | null } | null;
+  error: string | null;
+};
+let sessionScanCache: { at: number; result: SessionScanResult } | null = null;
 
 /** Recursively find the most recently modified rollout-*.jsonl. */
 function newestRollout(dir: string): string | null {
@@ -77,18 +84,27 @@ const ERROR_MARKERS = [
  *  - the most recent rate_limits object (proactive signal, if this codex build emits it)
  *  - any usage-limit error line (reactive backstop)
  */
-function scanSession(): {
-  usage: { primary: PWindow | null; secondary: PWindow | null } | null;
-  error: string | null;
-} {
+function scanSession(): SessionScanResult {
+  const now = Date.now();
+  if (sessionScanCache && now - sessionScanCache.at < SESSION_SCAN_CACHE_MS) {
+    return sessionScanCache.result;
+  }
+
   const file = newestRollout(sessionsDir());
-  if (!file) return { usage: null, error: null };
+  let result: SessionScanResult;
+  if (!file) {
+    result = { usage: null, error: null };
+    sessionScanCache = { at: now, result };
+    return result;
+  }
 
   let lines: string[];
   try {
     lines = fs.readFileSync(file, "utf8").split("\n");
   } catch {
-    return { usage: null, error: null };
+    result = { usage: null, error: null };
+    sessionScanCache = { at: now, result };
+    return result;
   }
 
   let usage: { primary: PWindow | null; secondary: PWindow | null } | null =
@@ -128,7 +144,9 @@ function scanSession(): {
     }
     if (usage && error) break;
   }
-  return { usage, error };
+  result = { usage, error };
+  sessionScanCache = { at: now, result };
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +154,18 @@ function scanSession(): {
 async function usageFor(name: string | null): Promise<PUsage | null> {
   const file = name === null ? liveAuthFile() : accountAuthFile(name);
   const u = await fetchUsage(file);
+  if (!u) return null;
+  return {
+    primary: u.primary,
+    secondary: u.secondary,
+    planType: u.planType,
+    email: u.email,
+  };
+}
+
+function cachedUsageFor(name: string | null): PUsage | null {
+  const file = name === null ? liveAuthFile() : accountAuthFile(name);
+  const u = cachedUsage(file);
   if (!u) return null;
   return {
     primary: u.primary,
@@ -183,6 +213,7 @@ export const codexProvider: Provider = {
   },
 
   fetchUsage: usageFor,
+  cachedUsage: cachedUsageFor,
   sessionUsage: () => scanSession().usage,
   scanError: () => scanSession().error,
 
