@@ -1,0 +1,242 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <style>
+      :root {
+        --bg: #16171b;
+        --card: #1e2026;
+        --line: #2c2f38;
+        --text: #e8e9ec;
+        --muted: #9aa0ac;
+        --accent: #10a37f;
+        --accent-hi: #14c493;
+        --warn: #e5a13a;
+        --danger: #e5533a;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        color: var(--text);
+        user-select: none;
+      }
+      .card {
+        height: 100vh;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 20px 22px;
+        display: flex;
+        flex-direction: column;
+        -webkit-app-region: drag;
+      }
+      .head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+      .dot {
+        width: 9px; height: 9px; border-radius: 50%;
+        background: var(--warn); box-shadow: 0 0 10px var(--warn);
+      }
+      .dot.err { background: var(--danger); box-shadow: 0 0 10px var(--danger); }
+      .title { font-size: 15px; font-weight: 600; }
+      .sub { font-size: 12px; color: var(--muted); margin: 2px 0 16px; }
+
+      .bar-wrap { margin-bottom: 18px; }
+      .bar-top {
+        display: flex; justify-content: space-between;
+        font-size: 11px; color: var(--muted); margin-bottom: 5px;
+      }
+      .bar { height: 7px; background: #10121648; border-radius: 4px; overflow: hidden; }
+      .bar > span {
+        display: block; height: 100%;
+        background: linear-gradient(90deg, var(--warn), var(--danger));
+        border-radius: 4px;
+      }
+
+      .flow { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+      .acct { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+      .avatar {
+        width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0;
+        display: grid; place-items: center;
+        font-size: 14px; font-weight: 700; color: #fff;
+      }
+      .avatar.from { background: #3a3d47; }
+      .avatar.to { background: linear-gradient(135deg, var(--accent), var(--accent-hi)); }
+      .acct .name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .acct .label { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .arrow { color: var(--muted); font-size: 18px; flex-shrink: 0; }
+      .reset { font-size: 11px; color: var(--muted); margin: 10px 0 0; }
+
+      .spacer { flex: 1; }
+      .actions { display: flex; gap: 10px; -webkit-app-region: no-drag; }
+      button {
+        flex: 1; padding: 11px; font-size: 13px; font-weight: 600;
+        border: 1px solid var(--line); border-radius: 9px; cursor: pointer;
+        transition: background .12s, border-color .12s, color .12s;
+      }
+      .deny { background: transparent; color: var(--muted); }
+      .deny:hover { background: #2a2d36; color: var(--text); }
+      .approve { background: var(--accent); border-color: var(--accent); color: #fff; }
+      .approve:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
+      .hint { text-align: center; font-size: 10px; color: var(--muted); margin-top: 9px; }
+      kbd {
+        background: #0d0e11; border: 1px solid var(--line); border-radius: 4px;
+        padding: 1px 5px; font-size: 10px; font-family: inherit;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="head">
+        <span class="dot" id="dot"></span>
+        <span class="title" id="title">Usage limit reached</span>
+      </div>
+      <div class="sub" id="sub">
+        Account switched — restart Codex Desktop to load it?
+      </div>
+      <div class="sub" id="cliNote" style="margin: -8px 0 16px; color: #7f8694;"></div>
+
+      <div class="bar-wrap" id="barWrap">
+        <div class="bar-top">
+          <span id="barLabel">Session</span><span id="barPct">—</span>
+        </div>
+        <div class="bar"><span id="barFill" style="width:0%"></span></div>
+      </div>
+
+      <div class="flow">
+        <div class="acct">
+          <div class="avatar from" id="fromAv">?</div>
+          <div style="min-width:0">
+            <div class="name" id="fromName">current</div>
+            <div class="label" id="fromLabel"></div>
+          </div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="acct">
+          <div class="avatar to" id="toAv">?</div>
+          <div style="min-width:0">
+            <div class="name" id="toName">next</div>
+            <div class="label" id="toLabel"></div>
+          </div>
+        </div>
+      </div>
+      <div class="reset" id="reset"></div>
+
+      <div class="spacer"></div>
+      <div class="actions">
+        <button class="deny" id="deny">Not now</button>
+        <button class="approve" id="approve">Restart Desktop</button>
+      </div>
+      <div class="hint"><kbd>Enter</kbd> restart · <kbd>Esc</kbd> keep running</div>
+    </div>
+
+    <script>
+      const q = new URLSearchParams(location.search);
+
+      const DICTS = {
+        en: {
+          sub: "Account switched — restart Codex Desktop to load it?",
+          cli: "New CLI sessions already use the new account. Restart any CLI session that is still running.",
+          approve: "Restart Desktop",
+          deny: "Not now",
+          hint: "<kbd>Enter</kbd> restart · <kbd>Esc</kbd> keep running",
+          frees: "{from} frees up in ~{rel} (at {when})",
+          left: "{n}% left",
+        },
+        ko: {
+          sub: "계정 전환 완료 — Codex 데스크탑을 재시작할까요?",
+          cli: "CLI는 새 세션부터 새 계정이 자동 적용됩니다. 이미 실행 중인 CLI 세션은 직접 재시작하세요.",
+          approve: "데스크탑 재시작",
+          deny: "나중에",
+          hint: "<kbd>Enter</kbd> 재시작 · <kbd>Esc</kbd> 유지",
+          frees: "{from} 계정은 ~{rel} 후 사용 가능 ({when})",
+          left: "{n}% 남음",
+        },
+        ja: {
+          sub: "アカウントを切り替えました — Codex デスクトップを再起動しますか？",
+          cli: "CLI は新しいセッションから自動的に新アカウントを使います。実行中の CLI セッションは再起動してください。",
+          approve: "デスクトップを再起動",
+          deny: "後で",
+          hint: "<kbd>Enter</kbd> 再起動 · <kbd>Esc</kbd> そのまま",
+          frees: "{from} は約 {rel} 後に利用可能（{when}）",
+          left: "残り {n}%",
+        },
+        zh: {
+          sub: "账号已切换 — 要重启 Codex 桌面版吗？",
+          cli: "CLI 的新会话会自动使用新账号。仍在运行的 CLI 会话请手动重启。",
+          approve: "重启桌面版",
+          deny: "暂不",
+          hint: "<kbd>Enter</kbd> 重启 · <kbd>Esc</kbd> 保持",
+          frees: "{from} 约 {rel} 后可用（{when}）",
+          left: "剩余 {n}%",
+        },
+      };
+      const L = DICTS[q.get("lang")] || DICTS.en;
+      const fmt = (s, vars) =>
+        Object.entries(vars).reduce((a, [k, v]) => a.replace("{" + k + "}", v), s);
+
+      document.getElementById("sub").textContent = L.sub;
+      document.getElementById("cliNote").textContent = L.cli;
+      document.getElementById("approve").textContent = L.approve;
+      document.getElementById("deny").textContent = L.deny;
+      document.querySelector(".hint").innerHTML = L.hint;
+
+      const initials = (s, fallback) => {
+        const t = (s || "").trim();
+        if (!t) return fallback;
+        const m = t.replace(/[^a-zA-Z0-9]/g, " ").trim().split(/\s+/);
+        return ((m[0]?.[0] || "") + (m[1]?.[0] || "")).toUpperCase() || fallback;
+      };
+
+      const isErr = q.get("kind") === "error";
+      document.getElementById("dot").className = "dot" + (isErr ? " err" : "");
+      document.getElementById("title").textContent =
+        q.get("windowLabel") || "Usage limit reached";
+
+      const fromName = q.get("fromName") || "current";
+      const toName = q.get("toName") || "next";
+      document.getElementById("fromName").textContent = fromName;
+      document.getElementById("toName").textContent = toName;
+      document.getElementById("fromLabel").textContent = q.get("fromLabel") || "";
+      document.getElementById("toLabel").textContent = q.get("toLabel") || "";
+      document.getElementById("fromAv").textContent = initials(q.get("fromLabel") || fromName, "?");
+      document.getElementById("toAv").textContent = initials(q.get("toLabel") || toName, "N");
+
+      const pct = parseFloat(q.get("percent"));
+      if (isErr || !Number.isFinite(pct)) {
+        document.getElementById("barWrap").style.display = "none";
+      } else {
+        const left = Math.max(0, Math.min(100, 100 - pct));
+        document.getElementById("barLabel").textContent =
+          q.get("barLabel") || q.get("windowLabel") || "";
+        document.getElementById("barPct").textContent =
+          fmt(L.left, { n: left.toFixed(0) });
+        document.getElementById("barFill").style.width = left + "%";
+      }
+
+      const resetAt = parseInt(q.get("resetAt"), 10);
+      if (Number.isFinite(resetAt)) {
+        const mins = Math.max(0, Math.round((resetAt - Date.now()) / 60000));
+        const when = new Date(resetAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        const h = Math.floor(mins / 60), m = mins % 60;
+        const rel = h > 0 ? `${h}h ${m}m` : `${m}m`;
+        document.getElementById("reset").textContent =
+          fmt(L.frees, { from: fromName, rel, when });
+      }
+
+      const approve = () => window.rotator.respond(true);
+      const deny = () => window.rotator.respond(false);
+      document.getElementById("approve").onclick = approve;
+      document.getElementById("deny").onclick = deny;
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") approve();
+        else if (e.key === "Escape") deny();
+      });
+    </script>
+  </body>
+</html>

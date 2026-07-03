@@ -1,0 +1,167 @@
+import { app } from "electron";
+
+export type Lang = "ko" | "en" | "ja" | "zh";
+
+/**
+ * Resolve the effective UI language. `pref` is the config value: "" follows
+ * the system locale. Supported: ko / en / ja / zh — anything else → en.
+ */
+export function resolveLang(pref: string): Lang {
+  const raw = (pref || app.getLocale() || "en").toLowerCase();
+  if (raw.startsWith("ko")) return "ko";
+  if (raw.startsWith("ja")) return "ja";
+  if (raw.startsWith("zh")) return "zh";
+  return "en";
+}
+
+type Dict = Record<string, string>;
+
+const STRINGS: Record<Lang, Dict> = {
+  en: {
+    "tray.usageWaiting": "usage: waiting…",
+    "tray.left": "{label}: {pct}% left (resets {time})",
+    "tray.na": "{label}: n/a",
+    "tray.accounts": "Accounts",
+    "tray.noneEnroll": "  (none — enroll below)",
+    "tray.manage": "Manage accounts…",
+    "tray.autoApprove": "Auto-restart Codex Desktop on account switch",
+    "tray.startAtLogin": "Start at login",
+    "win.hours": "{h}h session",
+    "win.week": "Weekly",
+    "win.month": "Monthly",
+    "win.days": "{d}d",
+    "win.session": "Session",
+    "win.limit": "{w} limit",
+    "tray.language": "Language",
+    "tray.langSystem": "System default",
+    "tray.quit": "Quit",
+    "tray.tooltip": "Codex Account Rotator — active: {name}",
+    "notif.switchedTitle": "Switched account",
+    "notif.switchedBody": "{from} → {to} — new CLI sessions now use {to}",
+    "notif.manualSwitched": "{from} → {to}{restarted}",
+    "notif.restartedSuffix": " (desktop restarted)",
+    "notif.switchFailed": "Switch failed",
+    "notif.noAccountTitle": "No account available",
+    "notif.noAccountBody": "All enrolled accounts are cooling down.",
+    "notif.desktopRestarted": "Codex Desktop restarted",
+    "notif.desktopRestartedBody": "Desktop relaunched on {name}",
+    "notif.desktopFailed": "Desktop restart failed",
+    "notif.desktopFailedBody": "Could not locate the Codex Desktop executable.",
+    "popup.title": "Restart Codex Desktop?",
+    "popup.limitReached": "Usage limit reached",
+  },
+  ko: {
+    "tray.usageWaiting": "사용량 확인 중…",
+    "tray.left": "{label}: {pct}% 남음 (리셋 {time})",
+    "tray.na": "{label}: 정보 없음",
+    "tray.accounts": "계정",
+    "tray.noneEnroll": "  (없음 — 아래에서 추가)",
+    "tray.manage": "계정 관리…",
+    "tray.autoApprove": "계정 전환 시 자동으로 Codex 데스크탑 재시작",
+    "tray.startAtLogin": "로그인 시 자동 시작",
+    "win.hours": "{h}시간 세션",
+    "win.week": "주간",
+    "win.month": "월간",
+    "win.days": "{d}일",
+    "win.session": "세션",
+    "win.limit": "{w} 한도",
+    "tray.language": "언어",
+    "tray.langSystem": "시스템 언어",
+    "tray.quit": "종료",
+    "tray.tooltip": "Codex Account Rotator — 활성: {name}",
+    "notif.switchedTitle": "계정 전환됨",
+    "notif.switchedBody": "{from} → {to} — 새 CLI 세션부터 {to} 사용",
+    "notif.manualSwitched": "{from} → {to}{restarted}",
+    "notif.restartedSuffix": " (데스크탑 재시작됨)",
+    "notif.switchFailed": "전환 실패",
+    "notif.noAccountTitle": "사용 가능한 계정 없음",
+    "notif.noAccountBody": "모든 계정이 쿨다운 중입니다.",
+    "notif.desktopRestarted": "Codex 데스크탑 재시작됨",
+    "notif.desktopRestartedBody": "{name} 계정으로 재실행됨",
+    "notif.desktopFailed": "데스크탑 재시작 실패",
+    "notif.desktopFailedBody": "Codex 데스크탑 실행 파일을 찾을 수 없습니다.",
+    "popup.title": "Codex 데스크탑을 재시작할까요?",
+    "popup.limitReached": "사용 한도 도달",
+  },
+  ja: {
+    "tray.usageWaiting": "使用量を確認中…",
+    "tray.left": "{label}: 残り{pct}%（{time} にリセット）",
+    "tray.na": "{label}: 情報なし",
+    "tray.accounts": "アカウント",
+    "tray.noneEnroll": "  (なし — 下から追加)",
+    "tray.manage": "アカウント管理…",
+    "tray.autoApprove": "アカウント切替時に Codex デスクトップを自動再起動",
+    "tray.startAtLogin": "ログイン時に起動",
+    "win.hours": "{h}時間セッション",
+    "win.week": "週間",
+    "win.month": "月間",
+    "win.days": "{d}日",
+    "win.session": "セッション",
+    "win.limit": "{w}上限",
+    "tray.language": "言語",
+    "tray.langSystem": "システムの言語",
+    "tray.quit": "終了",
+    "tray.tooltip": "Codex Account Rotator — 使用中: {name}",
+    "notif.switchedTitle": "アカウントを切り替えました",
+    "notif.switchedBody": "{from} → {to} — CLI の新しいセッションから {to} を使用",
+    "notif.manualSwitched": "{from} → {to}{restarted}",
+    "notif.restartedSuffix": "（デスクトップ再起動）",
+    "notif.switchFailed": "切替に失敗しました",
+    "notif.noAccountTitle": "利用可能なアカウントがありません",
+    "notif.noAccountBody": "すべてのアカウントがクールダウン中です。",
+    "notif.desktopRestarted": "Codex デスクトップを再起動しました",
+    "notif.desktopRestartedBody": "{name} で再起動しました",
+    "notif.desktopFailed": "デスクトップの再起動に失敗しました",
+    "notif.desktopFailedBody": "Codex デスクトップの実行ファイルが見つかりません。",
+    "popup.title": "Codex デスクトップを再起動しますか？",
+    "popup.limitReached": "使用上限に到達",
+  },
+  zh: {
+    "tray.usageWaiting": "正在获取用量…",
+    "tray.left": "{label}: 剩余{pct}%（{time} 重置）",
+    "tray.na": "{label}: 无数据",
+    "tray.accounts": "账号",
+    "tray.noneEnroll": "  (无 — 请在下方添加)",
+    "tray.manage": "管理账号…",
+    "tray.autoApprove": "切换账号时自动重启 Codex 桌面版",
+    "tray.startAtLogin": "开机自动启动",
+    "win.hours": "{h}小时会话",
+    "win.week": "每周",
+    "win.month": "每月",
+    "win.days": "{d}天",
+    "win.session": "会话",
+    "win.limit": "{w}上限",
+    "tray.language": "语言",
+    "tray.langSystem": "跟随系统",
+    "tray.quit": "退出",
+    "tray.tooltip": "Codex Account Rotator — 当前: {name}",
+    "notif.switchedTitle": "已切换账号",
+    "notif.switchedBody": "{from} → {to} — CLI 新会话将使用 {to}",
+    "notif.manualSwitched": "{from} → {to}{restarted}",
+    "notif.restartedSuffix": "（桌面版已重启）",
+    "notif.switchFailed": "切换失败",
+    "notif.noAccountTitle": "没有可用账号",
+    "notif.noAccountBody": "所有账号都在冷却中。",
+    "notif.desktopRestarted": "Codex 桌面版已重启",
+    "notif.desktopRestartedBody": "已使用 {name} 重新启动",
+    "notif.desktopFailed": "桌面版重启失败",
+    "notif.desktopFailedBody": "找不到 Codex 桌面版程序。",
+    "popup.title": "要重启 Codex 桌面版吗？",
+    "popup.limitReached": "已达使用上限",
+  },
+};
+
+/** Translate `key` in `lang`, substituting {var} placeholders from `vars`. */
+export function t(
+  lang: Lang,
+  key: string,
+  vars?: Record<string, string | number>
+): string {
+  let s = STRINGS[lang][key] ?? STRINGS.en[key] ?? key;
+  if (vars) {
+    for (const [k, v] of Object.entries(vars)) {
+      s = s.replace("{" + k + "}", String(v));
+    }
+  }
+  return s;
+}

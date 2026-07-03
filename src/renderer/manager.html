@@ -1,0 +1,708 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <style>
+      :root {
+        --bg: #16171b; --card: #1e2026; --line: #2c2f38;
+        --text: #e8e9ec; --muted: #9aa0ac;
+        --accent: #10a37f; --accent-hi: #14c493;
+        --claude: #d97757;
+        --warn: #e5a13a; --danger: #e5533a;
+      }
+      * { box-sizing: border-box; }
+      ::-webkit-scrollbar { width: 10px; height: 10px; }
+      ::-webkit-scrollbar-track { background: #101216; }
+      ::-webkit-scrollbar-thumb { background: #2c2f38; border-radius: 6px; border: 2px solid #101216; }
+      ::-webkit-scrollbar-thumb:hover { background: #3a3f4c; }
+      body {
+        margin: 0; background: var(--bg); color: var(--text);
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      .titlebar {
+        height: 36px; display: flex; align-items: center; justify-content: space-between;
+        padding: 0 8px 0 12px; background: #101216; border-bottom: 1px solid var(--line);
+        -webkit-app-region: drag; user-select: none;
+      }
+      .tb-title { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--muted); }
+      .tb-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
+      .tb-close {
+        -webkit-app-region: no-drag; width: 30px; height: 24px; padding: 0;
+        border: none; background: transparent; color: var(--muted);
+        font-size: 13px; border-radius: 6px; cursor: pointer; line-height: 1;
+      }
+      .tb-close:hover { background: var(--danger); color: #fff; }
+      .body { padding: 14px 18px 16px; }
+
+      .add { display: flex; gap: 8px; margin-bottom: 14px; }
+      button {
+        border: 1px solid var(--line); background: var(--card); color: var(--text);
+        border-radius: 8px; padding: 8px 12px; font-size: 12px; font-weight: 600;
+        cursor: pointer; white-space: nowrap;
+      }
+      button:hover { background: #2a2d36; border-color: #3a3f4c; }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      button.primary:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
+      button.claude { background: var(--claude); border-color: var(--claude); color: #fff; }
+      button.claude:hover { filter: brightness(1.1); }
+      button.ghost { background: transparent; color: var(--muted); }
+      button.ghost:hover { background: #2a2d36; color: var(--text); }
+      button:disabled { opacity: .5; cursor: default; }
+
+      /* two provider columns */
+      .cols { display: flex; gap: 14px; align-items: flex-start; }
+      .col { flex: 1; min-width: 0; }
+      .colhead {
+        display: flex; align-items: center; gap: 8px;
+        font-size: 13px; font-weight: 700; margin-bottom: 10px;
+        padding-bottom: 7px; border-bottom: 1px solid var(--line);
+      }
+      .colhead .cdot { width: 8px; height: 8px; border-radius: 50%; }
+      .colhead .cdot.codex { background: var(--accent); }
+      .colhead .cdot.claude { background: var(--claude); }
+
+      .acct {
+        background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+        padding: 13px 14px; margin-bottom: 12px;
+      }
+      .acct.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset, 0 4px 16px #10a37f18; }
+      .col[data-prov="claude"] .acct.active { border-color: var(--claude); box-shadow: 0 0 0 1px var(--claude) inset, 0 4px 16px #d9775718; }
+      .top { display: flex; align-items: center; gap: 10px; }
+      .avatar {
+        width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0;
+        display: grid; place-items: center; font-size: 14px; font-weight: 700; color: #fff;
+        background: #3a3d47;
+      }
+      .avatar.active { background: linear-gradient(135deg, var(--accent), var(--accent-hi)); }
+      .col[data-prov="claude"] .avatar.active { background: linear-gradient(135deg, #d97757, #e89b7f); }
+      .who { flex: 1; min-width: 0; }
+      .who .name { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .who .label { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .badge {
+        font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 20px;
+        letter-spacing: .3px; flex-shrink: 0;
+        background: #10a37f22; color: var(--accent-hi); border: 1px solid #10a37f44;
+      }
+      .badge.waiting { background: #6b728022; color: #b6bcc7; border-color: #6b728044; }
+      .badge.resting { background: #e5a13a22; color: var(--warn); border-color: #e5a13a44; }
+
+      .statusrow { margin-top: 8px; }
+      .status { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 500; }
+      .status .sdot { width: 7px; height: 7px; border-radius: 50%; }
+      .status.ok { color: var(--accent-hi); }
+      .status.ok .sdot { background: var(--accent-hi); box-shadow: 0 0 6px var(--accent-hi); }
+      .status.off { color: var(--muted); }
+      .status.off .sdot { background: var(--muted); }
+
+      .win { margin-top: 9px; }
+      .win-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
+      .win-label { font-size: 12px; font-weight: 500; color: #c8ccd4; }
+      .win-left { font-size: 12px; font-weight: 600; }
+      .win-left .num { font-size: 14px; }
+      .bar { height: 8px; background: #0d0f13; border-radius: 5px; overflow: hidden; border: 1px solid #24262e; }
+      .bar > span { display: block; height: 100%; border-radius: 5px; background: linear-gradient(90deg, #10a37f, #14c493); transition: width .3s; }
+      .bar > span.hi { background: linear-gradient(90deg, var(--warn), var(--danger)); }
+      .win-reset { font-size: 11px; color: var(--muted); margin-top: 3px; }
+      .win.low .win-left { color: var(--warn); }
+
+      /* Compact rows for non-active (waiting/resting) accounts */
+      .cwins { margin-top: 10px; display: grid; gap: 7px; }
+      .cwin { display: flex; align-items: center; gap: 9px; }
+      .cwin .ck { width: 38px; font-size: 11px; color: var(--muted); flex-shrink: 0; }
+      .cwin .cbar { flex: 1; height: 6px; background: #0d0f13; border-radius: 4px; overflow: hidden; border: 1px solid #24262e; }
+      .cwin .cbar > span { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, #10a37f, #14c493); }
+      .cwin .cbar > span.hi { background: linear-gradient(90deg, var(--warn), var(--danger)); }
+      .cwin .cv { width: 58px; text-align: right; font-size: 11px; font-weight: 600; flex-shrink: 0; }
+      .cwin.low .cv { color: var(--warn); }
+
+      .usage-none { font-size: 12px; color: #6b7280; margin-top: 10px; }
+
+      .row-actions { display: flex; gap: 8px; margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+      .row-actions button { flex: 0 0 auto; }
+      .empty { color: var(--muted); font-size: 12px; text-align: center; padding: 24px 0; }
+      .msg { font-size: 11px; color: var(--warn); min-height: 14px; margin-top: 2px; margin-bottom: 8px; }
+
+      /* options panel */
+      #optPanel {
+        display: none; background: #1e2026; border: 1px solid #2c2f38;
+        border-radius: 12px; padding: 12px 14px; margin-bottom: 14px;
+      }
+      .opt-section {
+        font-size: 11px; font-weight: 700; color: var(--muted);
+        letter-spacing: .4px; margin: 12px 0 8px; padding-top: 10px;
+        border-top: 1px solid var(--line);
+      }
+      .opt-section:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+      .opt-row { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 9px; }
+      .opt-row:last-child { margin-bottom: 0; }
+      .opt-row span.lbl { flex: 1; }
+      .opt-row input[type="number"], .opt-row select {
+        background: #16171b; border: 1px solid #2c2f38; color: #e8e9ec;
+        border-radius: 8px; padding: 6px 8px; font-size: 12px;
+      }
+      .opt-row input[type="number"] { width: 70px; }
+      label.opt-row { cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <div class="titlebar">
+      <div class="tb-title"><span class="tb-dot"></span><span id="tbTitle">Accounts</span></div>
+      <button class="tb-close" id="tbClose" aria-label="Close">&#x2715;</button>
+    </div>
+
+    <div class="body">
+    <div class="add">
+      <button class="primary" id="addCodex" style="flex:1;">+ Add Codex account</button>
+      <button id="optBtn">Options</button>
+      <button class="claude" id="addClaude" style="flex:1;">+ Add Claude account</button>
+    </div>
+
+    <div id="optPanel">
+      <div class="opt-section" id="optSecCommon">General</div>
+      <div class="opt-row">
+        <span class="lbl" id="optLangLabel">Language</span>
+        <select id="optLang">
+          <option value="">System</option>
+          <option value="ko">한국어</option>
+          <option value="en">English</option>
+          <option value="ja">日本語</option>
+          <option value="zh">中文</option>
+        </select>
+      </div>
+      <label class="opt-row">
+        <input type="checkbox" id="optLoginStart" />
+        <span id="optLoginStartLabel">Start at login</span>
+      </label>
+
+      <div class="opt-section">Codex</div>
+      <label class="opt-row">
+        <input type="checkbox" id="optAuto" />
+        <span id="optAutoLabel">Auto-restart Codex Desktop on account switch</span>
+      </label>
+      <div class="opt-row">
+        <span class="lbl" data-l="optPrim">5h switch threshold (% left)</span>
+        <input type="number" data-opt="primaryMinLeftPct" data-p="codex" min="0" max="50" />
+      </div>
+      <div class="opt-row">
+        <span class="lbl" data-l="optSec">Weekly switch threshold (% left)</span>
+        <input type="number" data-opt="weeklyMinLeftPct" data-p="codex" min="0" max="50" />
+      </div>
+      <div class="opt-row">
+        <span class="lbl" data-l="optPoll">Threshold check interval (sec)</span>
+        <input type="number" data-opt="pollIntervalSec" data-p="codex" min="10" max="3600" />
+      </div>
+
+      <div class="opt-section">Claude</div>
+      <div class="opt-row">
+        <span class="lbl" data-l="optPrim">5h switch threshold (% left)</span>
+        <input type="number" data-opt="primaryMinLeftPct" data-p="claude" min="0" max="50" />
+      </div>
+      <div class="opt-row">
+        <span class="lbl" data-l="optSec">Weekly switch threshold (% left)</span>
+        <input type="number" data-opt="weeklyMinLeftPct" data-p="claude" min="0" max="50" />
+      </div>
+      <div class="opt-row">
+        <span class="lbl" data-l="optPoll">Threshold check interval (sec)</span>
+        <input type="number" data-opt="pollIntervalSec" data-p="claude" min="300" max="3600" />
+      </div>
+    </div>
+
+    <div class="msg" id="msg"></div>
+    <div id="loginBox" style="display:none;background:#1e2026;border:1px solid #10a37f44;border-radius:10px;padding:10px 12px;margin-bottom:12px;">
+      <div id="loginPrompt" style="font-size:12px;color:#e8e9ec;margin-bottom:6px;">Browser didn't open? Finish login here:</div>
+      <button class="primary" id="openLogin">Open login page</button>
+    </div>
+
+    <div class="cols">
+      <div class="col" data-prov="codex">
+        <div class="colhead"><span class="cdot codex"></span>Codex</div>
+        <div class="list" id="list-codex"></div>
+      </div>
+      <div class="col" data-prov="claude">
+        <div class="colhead"><span class="cdot claude"></span>Claude</div>
+        <div class="list" id="list-claude"></div>
+      </div>
+    </div>
+    </div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const msg = (t) => { $("msg").textContent = t || ""; };
+
+      const DICTS = {
+        en: {
+          title: "Accounts",
+          addCodex: "+ Add Codex account",
+          addClaude: "+ Add Claude account",
+          options: "Options",
+          common: "General",
+          optAuto: "Auto-restart Codex Desktop on account switch",
+          optLoginStart: "Start at login",
+          optLang: "Language",
+          optLangSystem: "System default",
+          optPrim: "5h switch threshold (% left)",
+          optSec: "Weekly switch threshold (% left)",
+          optPoll: "Threshold check interval (sec)",
+          winHours: "{h}h session", winMonth: "Monthly", winDays: "{d}d",
+          cMonth: "Mo",
+          loginPrompt: "Browser didn't open? Finish login here:",
+          openLogin: "Open login page",
+          empty: "No accounts.<br>Log in with the CLI, then add it here.",
+          switchTo: "Switch to this",
+          rename: "Rename", remove: "Remove", save: "Save",
+          switching: "Switching…",
+          opening: "Opening {p} login in your browser… log into the account you want to add.",
+          added: "Added {n} — rename it below if you like.",
+          loginFailed: "Add failed: ",
+          loadFailed: "Failed to load: ",
+          win5h: "5-hour session", winWeek: "Weekly",
+          c5h: "5h", cWeek: "Week",
+          leftHtml: '<span class="num">{n}%</span> left',
+          leftShort: "{n}% left",
+          resetsIn: "resets in {rel}",
+          usageNone: "Usage unavailable — token may be expired.",
+          usageNoneShort: "Usage unavailable",
+          connected: "connected", offline: "offline",
+        },
+        ko: {
+          title: "계정 관리",
+          addCodex: "+ Codex 계정 추가",
+          addClaude: "+ Claude 계정 추가",
+          options: "옵션",
+          common: "일반",
+          optAuto: "계정 전환 시 자동으로 Codex 데스크탑 재시작",
+          optLoginStart: "로그인 시 자동 시작",
+          optLang: "언어",
+          optLangSystem: "시스템 언어",
+          optPrim: "5시간 전환 임계값 (남은 사용량 %)",
+          optSec: "주간 전환 임계값 (남은 사용량 %)",
+          optPoll: "임계값 확인 주기 (초)",
+          winHours: "{h}시간 세션", winMonth: "월간", winDays: "{d}일",
+          cMonth: "월간",
+          loginPrompt: "브라우저가 안 열렸나요? 여기서 로그인:",
+          openLogin: "로그인 페이지 열기",
+          empty: "계정이 없습니다.<br>CLI로 로그인한 뒤 여기서 추가하세요.",
+          switchTo: "이 계정으로 전환",
+          rename: "이름 변경", remove: "삭제", save: "저장",
+          switching: "전환 중…",
+          opening: "브라우저에서 {p} 로그인 여는 중… 추가할 계정으로 로그인하세요.",
+          added: "{n} 추가됨 — 필요하면 아래에서 이름을 바꾸세요.",
+          loginFailed: "추가 실패: ",
+          loadFailed: "불러오기 실패: ",
+          win5h: "5시간 세션", winWeek: "주간",
+          c5h: "5h", cWeek: "주간",
+          leftHtml: '<span class="num">{n}%</span> 남음',
+          leftShort: "{n}% 남음",
+          resetsIn: "{rel} 후 리셋",
+          usageNone: "사용량 조회 불가 — 토큰이 만료됐을 수 있습니다.",
+          usageNoneShort: "사용량 조회 불가",
+          connected: "연결됨", offline: "오프라인",
+        },
+        ja: {
+          title: "アカウント管理",
+          addCodex: "+ Codex アカウント追加",
+          addClaude: "+ Claude アカウント追加",
+          options: "オプション",
+          common: "一般",
+          optAuto: "アカウント切替時に Codex デスクトップを自動再起動",
+          optLoginStart: "ログイン時に起動",
+          optLang: "言語",
+          optLangSystem: "システムの言語",
+          optPrim: "5時間 切替しきい値（残り%）",
+          optSec: "週間 切替しきい値（残り%）",
+          optPoll: "しきい値チェック間隔（秒）",
+          winHours: "{h}時間セッション", winMonth: "月間", winDays: "{d}日",
+          cMonth: "月",
+          loginPrompt: "ブラウザが開かない場合はこちらから:",
+          openLogin: "ログインページを開く",
+          empty: "アカウントがありません。<br>CLI でログインしてから追加してください。",
+          switchTo: "このアカウントに切替",
+          rename: "名前を変更", remove: "削除", save: "保存",
+          switching: "切替中…",
+          opening: "ブラウザで {p} ログインを開いています… 追加するアカウントでログインしてください。",
+          added: "{n} を追加しました — 必要なら下で名前を変更できます。",
+          loginFailed: "追加失敗: ",
+          loadFailed: "読み込み失敗: ",
+          win5h: "5時間セッション", winWeek: "週間",
+          c5h: "5h", cWeek: "週",
+          leftHtml: '残り <span class="num">{n}%</span>',
+          leftShort: "残り {n}%",
+          resetsIn: "{rel} 後にリセット",
+          usageNone: "使用量を取得できません — トークン期限切れの可能性。",
+          usageNoneShort: "使用量取得不可",
+          connected: "接続中", offline: "オフライン",
+        },
+        zh: {
+          title: "账号管理",
+          addCodex: "+ 添加 Codex 账号",
+          addClaude: "+ 添加 Claude 账号",
+          options: "选项",
+          common: "通用",
+          optAuto: "切换账号时自动重启 Codex 桌面版",
+          optLoginStart: "开机自动启动",
+          optLang: "语言",
+          optLangSystem: "跟随系统",
+          optPrim: "5小时切换阈值（剩余%）",
+          optSec: "每周切换阈值（剩余%）",
+          optPoll: "阈值检查间隔（秒）",
+          winHours: "{h}小时会话", winMonth: "每月", winDays: "{d}天",
+          cMonth: "月",
+          loginPrompt: "浏览器没有打开？在这里完成登录：",
+          openLogin: "打开登录页面",
+          empty: "还没有账号。<br>先用 CLI 登录，再在这里添加。",
+          switchTo: "切换到此账号",
+          rename: "重命名", remove: "删除", save: "保存",
+          switching: "切换中…",
+          opening: "正在浏览器中打开 {p} 登录… 请登录要添加的账号。",
+          added: "已添加 {n} — 如需要可在下方重命名。",
+          loginFailed: "添加失败：",
+          loadFailed: "加载失败：",
+          win5h: "5小时会话", winWeek: "每周",
+          c5h: "5h", cWeek: "周",
+          leftHtml: '剩余 <span class="num">{n}%</span>',
+          leftShort: "剩余 {n}%",
+          resetsIn: "{rel} 后重置",
+          usageNone: "无法获取用量 — 令牌可能已过期。",
+          usageNoneShort: "无法获取用量",
+          connected: "已连接", offline: "离线",
+        },
+      };
+      let M = DICTS.en;
+      const fmt = (s, vars) =>
+        Object.entries(vars).reduce((a, [k, v]) => a.replace("{" + k + "}", v), s);
+
+      let provList = []; // [{id, displayName, hasLoginFlow, hasDesktop}]
+      const provInfo = (id) => provList.find((p) => p.id === id) || {};
+
+      function applyStatic() {
+        $("tbTitle").textContent = M.title;
+        document.title = M.title;
+        $("addCodex").textContent = M.addCodex;
+        $("addClaude").textContent = M.addClaude;
+        $("optBtn").textContent = M.options;
+        $("optSecCommon").textContent = M.common;
+        $("optAutoLabel").textContent = M.optAuto;
+        $("optLoginStartLabel").textContent = M.optLoginStart;
+        $("optLangLabel").textContent = M.optLang;
+        $("optLang").querySelector('option[value=""]').textContent = M.optLangSystem;
+        $("loginPrompt").textContent = M.loginPrompt;
+        $("openLogin").textContent = M.openLogin;
+        document.querySelectorAll("[data-l]").forEach((el) => {
+          el.textContent = M[el.dataset.l] || el.textContent;
+        });
+      }
+
+      // Window display name from its real length (5h session / weekly / monthly).
+      function winName(w, fallback) {
+        const mins = w && w.windowMinutes;
+        if (!mins) return fallback;
+        const h = Math.round(mins / 60);
+        if (h >= 24 * 28) return M.winMonth;
+        if (h >= 24 * 6 && h <= 24 * 8) return M.winWeek;
+        if (h >= 24) return fmt(M.winDays, { d: Math.round(h / 24) });
+        return fmt(M.winHours, { h });
+      }
+      function cName(w, fallback) {
+        const mins = w && w.windowMinutes;
+        if (!mins) return fallback;
+        const h = Math.round(mins / 60);
+        if (h >= 24 * 28) return M.cMonth;
+        if (h >= 24 * 6 && h <= 24 * 8) return M.cWeek;
+        if (h >= 24) return Math.round(h / 24) + "d";
+        return h + "h";
+      }
+
+      const initials = (s, fb) => {
+        const t = (s || "").trim();
+        if (!t) return fb;
+        const m = t.replace(/[^a-zA-Z0-9]/g, " ").trim().split(/\s+/);
+        return ((m[0]?.[0] || "") + (m[1]?.[0] || "")).toUpperCase() || fb;
+      };
+      const esc = (s) => (s || "").replace(/[&<>"]/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+      const planLabel = (prov, p) => {
+        const k = (p || "").toLowerCase();
+        if (prov === "codex") {
+          // Codex plan_type values have non-obvious display names.
+          if (k === "prolite") return "Pro 5x";
+          if (k === "pro") return "Pro 10x";
+        }
+        if (k === "plus") return "Plus";
+        if (k === "free") return "Free";
+        return p ? p.charAt(0).toUpperCase() + p.slice(1) : "";
+      };
+
+      function fmtReset(resetsAt) {
+        if (!resetsAt) return "";
+        const mins = Math.max(0, Math.round((resetsAt - Date.now()) / 60000));
+        const h = Math.floor(mins / 60), m = mins % 60;
+        const rel =
+          h >= 48
+            ? `${Math.floor(h / 24)}d ${h % 24}h`
+            : h > 0
+            ? `${h}h ${m}m`
+            : `${m}m`;
+        return fmt(M.resetsIn, { rel });
+      }
+
+      const leftPct = (w) => Math.max(0, Math.min(100, Math.round(100 - w.usedPercent)));
+
+      // Full window block (active account): label, % left, bar, reset countdown.
+      function win(label, w) {
+        if (!w) return "";
+        const left = leftPct(w), low = left <= 20;
+        return `<div class="win ${low ? "low" : ""}">
+          <div class="win-head">
+            <span class="win-label">${label}</span>
+            <span class="win-left">${fmt(M.leftHtml, { n: left })}</span>
+          </div>
+          <div class="bar"><span class="${low ? "hi" : ""}" style="width:${left}%"></span></div>
+          <div class="win-reset">${fmtReset(w.resetsAt)}</div>
+        </div>`;
+      }
+
+      // Compact single-line window (waiting/resting accounts).
+      function cwin(label, w) {
+        if (!w) return "";
+        const left = leftPct(w), low = left <= 20;
+        return `<div class="cwin ${low ? "low" : ""}">
+          <span class="ck">${label}</span>
+          <span class="cbar"><span class="${low ? "hi" : ""}" style="width:${left}%"></span></span>
+          <span class="cv">${fmt(M.leftShort, { n: left })}</span>
+        </div>`;
+      }
+
+      // ACTIVE — the live account (currently in use).
+      // WAITING — idle but still has quota left in every window.
+      // RESTING — idle with a window fully spent (0% left), waiting for reset.
+      // Real fetched usage is authoritative; the app's own cooldown flag is
+      // only a fallback for when the usage fetch fails.
+      function statusOf(a) {
+        if (a.active) return { cls: "", text: "ACTIVE" };
+        const p = a.usage && a.usage.primary, s = a.usage && a.usage.secondary;
+        if (p || s) {
+          const exhausted =
+            (p && p.usedPercent >= 100) || (s && s.usedPercent >= 100);
+          return exhausted
+            ? { cls: "resting", text: "RESTING" }
+            : { cls: "waiting", text: "WAITING" };
+        }
+        const cooling = a.coolingDownUntil && a.coolingDownUntil > Date.now();
+        return cooling
+          ? { cls: "resting", text: "RESTING" }
+          : { cls: "waiting", text: "WAITING" };
+      }
+
+      function renameRow(prov, name) {
+        return `<div class="rename-row" data-for="${esc(prov)}:${esc(name)}" style="display:none;gap:8px;margin-top:8px;">
+          <input data-rename-input="${esc(prov)}:${esc(name)}" value="${esc(name)}"
+            style="flex:1;background:#16171b;border:1px solid #2c2f38;color:#e8e9ec;border-radius:8px;padding:7px 10px;font-size:12px;" />
+          <button class="primary" data-act="rename-save" data-p="${esc(prov)}" data-n="${esc(name)}">${M.save}</button>
+        </div>`;
+      }
+
+      function header(prov, a, st) {
+        const av = initials(a.label || a.name, "?");
+        const plan = a.usage && a.usage.planType ? planLabel(prov, a.usage.planType) : "";
+        return `<div class="top">
+          <div class="avatar ${a.active ? "active" : ""}">${av}</div>
+          <div class="who">
+            <div class="name">${esc(a.name)}</div>
+            <div class="label">${esc([plan, a.usage && a.usage.email].filter(Boolean).join(" · ") || a.label || "")}</div>
+          </div>
+          <span class="badge ${st.cls}">${st.text}</span>
+        </div>`;
+      }
+
+      // Full card — only for the live account.
+      function renderActive(prov, a) {
+        const st = statusOf(a);
+        const hasUsage = a.usage && (a.usage.primary || a.usage.secondary);
+        const wins = hasUsage
+          ? `${win(winName(a.usage.primary, M.win5h), a.usage.primary)}${win(winName(a.usage.secondary, M.winWeek), a.usage.secondary)}`
+          : `<div class="usage-none">${M.usageNone}</div>`;
+        const status = hasUsage
+          ? `<span class="status ok"><span class="sdot"></span>${M.connected}</span>`
+          : `<span class="status off"><span class="sdot"></span>${M.offline}</span>`;
+        return `<div class="acct active">
+          ${header(prov, a, st)}
+          <div class="statusrow">${status}</div>
+          ${wins}
+          <div class="row-actions">
+            <button data-act="rename" data-p="${esc(prov)}" data-n="${esc(a.name)}">${M.rename}</button>
+            <button class="ghost" data-act="remove" data-p="${esc(prov)}" data-n="${esc(a.name)}">${M.remove}</button>
+          </div>
+          ${renameRow(prov, a.name)}
+        </div>`;
+      }
+
+      // Compact card — waiting/resting accounts, minimal info.
+      function renderCompact(prov, a) {
+        const st = statusOf(a);
+        const hasUsage = a.usage && (a.usage.primary || a.usage.secondary);
+        const wins = hasUsage
+          ? `<div class="cwins">${cwin(cName(a.usage.primary, M.c5h), a.usage.primary)}${cwin(cName(a.usage.secondary, M.cWeek), a.usage.secondary)}</div>`
+          : `<div class="usage-none">${M.usageNoneShort}</div>`;
+        return `<div class="acct">
+          ${header(prov, a, st)}
+          ${wins}
+          <div class="row-actions">
+            <button class="primary" data-act="switch" data-p="${esc(prov)}" data-n="${esc(a.name)}">${M.switchTo}</button>
+            <button data-act="rename" data-p="${esc(prov)}" data-n="${esc(a.name)}">${M.rename}</button>
+            <button class="ghost" data-act="remove" data-p="${esc(prov)}" data-n="${esc(a.name)}">${M.remove}</button>
+          </div>
+          ${renameRow(prov, a.name)}
+        </div>`;
+      }
+
+      function renderCol(prov, accounts) {
+        const list = $("list-" + prov);
+        if (!list) return;
+        if (!accounts.length) {
+          list.innerHTML = `<div class="empty">${M.empty}</div>`;
+          return;
+        }
+        // Live account first, then the rest.
+        const ordered = [...accounts].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
+        list.innerHTML = ordered
+          .map((a) => (a.active ? renderActive(prov, a) : renderCompact(prov, a)))
+          .join("");
+      }
+
+      // Sequence token: a slow in-flight list() must never overwrite a newer render.
+      let refreshSeq = 0;
+      async function refresh() {
+        const seq = ++refreshSeq;
+        try {
+          const lang = await window.rotator.getLang().catch(() => "en");
+          M = DICTS[lang] || DICTS.en;
+          if (provList.length === 0) provList = await window.rotator.providers();
+          applyStatic();
+          await Promise.all(
+            provList.map(async (p) => {
+              const accounts = await window.rotator.list(p.id).catch(() => []);
+              if (seq !== refreshSeq) return; // stale response
+              renderCol(p.id, accounts);
+            })
+          );
+        } catch (e) {
+          if (seq === refreshSeq) msg(M.loadFailed + e);
+        }
+      }
+
+      document.querySelector(".cols").addEventListener("click", async (e) => {
+        const btn = e.target.closest("button");
+        if (!btn) return;
+        const name = btn.dataset.n, act = btn.dataset.act, prov = btn.dataset.p;
+        if (!act) return;
+        if (act === "switch") { msg(M.switching); await window.rotator.switchTo(prov, name); msg(""); refresh(); }
+        else if (act === "remove") { await window.rotator.remove(prov, name); refresh(); }
+        else if (act === "rename") {
+          const row = document.querySelector(`.rename-row[data-for="${CSS.escape(prov + ":" + name)}"]`);
+          if (row) {
+            row.style.display = "flex";
+            row.querySelector("input").focus();
+          }
+        }
+        else if (act === "rename-save") {
+          const input = document.querySelector(`input[data-rename-input="${CSS.escape(prov + ":" + name)}"]`);
+          const nn = (input?.value || "").trim();
+          if (!nn || nn === name) { refresh(); return; }
+          const res = await window.rotator.rename(prov, name, nn);
+          msg(res.ok ? "" : res.error);
+          refresh();
+        }
+      });
+
+      document.querySelector(".cols").addEventListener("keydown", async (e) => {
+        if (e.key !== "Enter") return;
+        const input = e.target.closest("input[data-rename-input]");
+        if (!input) return;
+        const [prov, name] = input.dataset.renameInput.split(/:(.+)/);
+        const nn = input.value.trim();
+        if (!nn || nn === name) { refresh(); return; }
+        const res = await window.rotator.rename(prov, name, nn);
+        msg(res.ok ? "" : res.error);
+        refresh();
+      });
+
+      async function addAccount(prov) {
+        const info = provInfo(prov);
+        const btn = prov === "codex" ? $("addCodex") : $("addClaude");
+        btn.disabled = true;
+        let res;
+        if (info.hasLoginFlow) {
+          msg(fmt(M.opening, { p: info.displayName || prov }));
+          res = await window.rotator.addViaLogin(prov);
+        } else {
+          // No headless login flow (Claude): enroll whatever the CLI is
+          // currently logged into.
+          res = await window.rotator.importCurrent(prov);
+        }
+        btn.disabled = false;
+        $("loginBox").style.display = "none";
+        msg(res.ok
+          ? fmt(M.added, { n: res.email || res.name })
+          : (M.loginFailed + res.error));
+        refresh();
+      }
+      $("addCodex").addEventListener("click", () => addAccount("codex"));
+      $("addClaude").addEventListener("click", () => addAccount("claude"));
+
+      // ------- Options panel -------
+      async function loadOptions() {
+        const cfg = await window.rotator.getConfig();
+        $("optAuto").checked = !!cfg.codex.autoApprove;
+        $("optLoginStart").checked = !!cfg.launchAtLogin;
+        $("optLang").value = cfg.language || "";
+        document.querySelectorAll("input[data-opt]").forEach((el) => {
+          const pc = cfg[el.dataset.p] || {};
+          el.value = pc[el.dataset.opt];
+        });
+      }
+      $("optBtn").addEventListener("click", async () => {
+        const p = $("optPanel");
+        if (p.style.display === "none" || !p.style.display) {
+          await loadOptions();
+          p.style.display = "block";
+        } else p.style.display = "none";
+      });
+      $("optAuto").addEventListener("change", () =>
+        window.rotator.setConfig({ codex: { autoApprove: $("optAuto").checked } }));
+      $("optLoginStart").addEventListener("change", () =>
+        window.rotator.setConfig({ launchAtLogin: $("optLoginStart").checked }));
+      $("optLang").addEventListener("change", async () => {
+        await window.rotator.setConfig({ language: $("optLang").value });
+        refresh(); // re-render in the new language
+      });
+      document.querySelectorAll("input[data-opt]").forEach((el) => {
+        el.addEventListener("change", () => {
+          const min = parseInt(el.min, 10), max = parseInt(el.max, 10);
+          const v = Math.min(max, Math.max(min, parseInt(el.value, 10) || min));
+          el.value = v;
+          window.rotator.setConfig({ [el.dataset.p]: { [el.dataset.opt]: v } });
+        });
+      });
+
+      let loginUrl = null;
+      window.rotator.onLoginUrl((url) => {
+        loginUrl = url;
+        $("loginBox").style.display = "block";
+      });
+      $("openLogin").addEventListener("click", () => {
+        if (loginUrl) window.rotator.openUrl(loginUrl);
+      });
+
+      $("tbClose").addEventListener("click", () => window.rotator.closeManager());
+
+      window.rotator.onChanged(() => refresh());
+      refresh();
+      setInterval(refresh, 15000);
+    </script>
+  </body>
+</html>

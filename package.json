@@ -1,0 +1,33 @@
+{
+  "name": "codex-account-rotator",
+  "version": "0.1.0",
+  "description": "Auto-rotate Codex CLI/Desktop accounts when usage limits are hit",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "start": "npm run build && electron .",
+    "dev": "electron .",
+    "dist": "npm run build && electron-builder"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
+    "typescript": "^5.6.0"
+  },
+  "build": {
+    "appId": "com.local.codex-account-rotator",
+    "productName": "Codex Account Rotator",
+    "files": ["dist/**/*", "src/renderer/**/*", "assets/**/*"],
+    "win": { "target": "nsis" },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true
+    },
+    "mac": { "target": "dmg", "category": "public.app-category.developer-tools" }
+  }
+}
