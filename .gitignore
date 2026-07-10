@@ -5,3 +5,6 @@ release/
 .DS_Store
 lazyswitch.txt
 *.mp4
+
+.omo/
+.codex-remote-attachments/

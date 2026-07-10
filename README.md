@@ -1,4 +1,4 @@
-# Codex Account Rotator
+# LazySwitch
 
 Tray app that keeps several Codex (ChatGPT-login) accounts enrolled locally and
 automatically rotates to the next one when the active account's usage window is
@@ -33,7 +33,7 @@ restart (optional toggle).
 
 ## Config
 
-`%APPDATA%/codex-account-rotator/config.json` (macOS: `~/Library/Application Support/...`).
+`%APPDATA%/LazySwitch/config.json` (macOS: `~/Library/Application Support/...`).
 
 | key | default | meaning |
 |---|---|---|
@@ -50,6 +50,12 @@ restart (optional toggle).
 ```bash
 npm install
 npm start          # build + launch the tray app
+npm run build
+node dist/main/cli.js status
+node dist/main/cli.js watch --interval 30
+node dist/main/cli.js statusline
+node dist/main/cli.js statusline claude
+node dist/main/cli.js install-hooks
 ```
 
 ## Status / caveats

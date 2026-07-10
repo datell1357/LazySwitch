@@ -12,6 +12,7 @@ export interface PWindow {
 export interface PUsage {
   primary: PWindow | null; // short window (5h session / free monthly)
   secondary: PWindow | null; // long window (weekly)
+  fable?: PWindow | null;
   planType: string | null;
   email: string | null;
 }
@@ -33,6 +34,7 @@ export interface LoginFlowResult {
 /** Per-provider user preferences (see config.ts). */
 export interface ProviderPrefs {
   autoApprove: boolean;
+  autoRestartCli: boolean;
   desktopAppPath: string;
   desktopProcessName: string;
   rotationOrder: string[];

@@ -8,17 +8,25 @@ import {
   Notification,
   shell,
 } from "electron";
+import * as fs from "fs";
 import * as path from "path";
 import { loadConfig, saveConfig, AppConfig, ProviderPrefs } from "./config";
 import { Provider, PAccount } from "./providers/types";
 import { codexProvider } from "./providers/codex";
 import { claudeProvider } from "./providers/claude";
 import { UsageMonitor, LimitReason, UsageSnapshot } from "./monitor";
-import { switchTo, pickNextAccount } from "./switcher";
+import { switchTo, pickNextAccount, isExhausted, exhaustedUntil } from "./switcher";
 import { promoteTrayIcon } from "./tray-pin";
 import { resolveLang, t as translate } from "./i18n";
+import { createCliHandover } from "./cli-handover";
+import { installHooks } from "./cli-hooks";
+import { showAppNotification } from "./app-notify";
+import type { CliSession } from "./cli-sessions";
 
 const providers: Provider[] = [codexProvider, claudeProvider];
+const APP_USER_MODEL_ID = "com.local.lazyswitch";
+
+if (process.platform === "win32") app.setAppUserModelId(APP_USER_MODEL_ID);
 
 let tray: Tray | null = null;
 let cfg: AppConfig = loadConfig();
@@ -82,6 +90,62 @@ function trayIcon() {
 
 function notify(title: string, body: string): void {
   if (Notification.isSupported()) new Notification({ title, body }).show();
+  showAppNotification({ title, body });
+}
+
+function quoteShortcutArg(value: string): string {
+  return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+function shortcutMatches(
+  actual: Electron.ShortcutDetails,
+  expected: Electron.ShortcutDetails
+): boolean {
+  return (
+    path.normalize(actual.target).toLowerCase() ===
+      path.normalize(expected.target).toLowerCase() &&
+    actual.args === expected.args &&
+    actual.appUserModelId === expected.appUserModelId
+  );
+}
+
+function ensureWindowsToastShortcut(): void {
+  if (process.platform !== "win32") return;
+  const appData = process.env.APPDATA;
+  if (!appData) return;
+
+  const shortcutPath = path.join(
+    appData,
+    "Microsoft",
+    "Windows",
+    "Start Menu",
+    "Programs",
+    "LazySwitch.lnk"
+  );
+  const details: Electron.ShortcutDetails = {
+    target: process.execPath,
+    args: quoteShortcutArg(app.getAppPath()),
+    appUserModelId: APP_USER_MODEL_ID,
+    description: "LazySwitch",
+  };
+  const exists = fs.existsSync(shortcutPath);
+  let stale = !exists;
+
+  if (exists) {
+    try {
+      stale = !shortcutMatches(shell.readShortcutLink(shortcutPath), details);
+    } catch (error) {
+      if (error instanceof Error) stale = true;
+      else throw error;
+    }
+  }
+
+  if (!stale) return;
+
+  fs.mkdirSync(path.dirname(shortcutPath), { recursive: true });
+  const operation = exists ? "replace" : "create";
+  if (!shell.writeShortcutLink(shortcutPath, operation, details))
+    console.warn(`Failed to write Windows notification shortcut: ${shortcutPath}`);
 }
 
 function accountDisplayName(
@@ -104,6 +168,13 @@ function accountDisplayLabel(account: PAccount | null | undefined): string {
 function T(key: string, vars?: Record<string, string | number>): string {
   return translate(resolveLang(cfg.language), key, vars);
 }
+
+const cliHandover = createCliHandover({
+  getLang: () => resolveLang(cfg.language),
+  getPrefs: prefsOf,
+  notify,
+  t: T,
+});
 
 /**
  * Human name for a rate-limit window from its real length: "5h session",
@@ -187,6 +258,24 @@ function buildMenu(): Menu {
       },
     },
     {
+      label: T("tray.autoRestartCli", { provider: cliHandover.providerName(codexProvider) }),
+      type: "checkbox",
+      checked: cfg.codex.autoRestartCli,
+      click: (item) => {
+        cfg.codex.autoRestartCli = item.checked;
+        saveConfig(cfg);
+      },
+    },
+    {
+      label: T("tray.autoRestartCli", { provider: cliHandover.providerName(claudeProvider) }),
+      type: "checkbox",
+      checked: cfg.claude.autoRestartCli,
+      click: (item) => {
+        cfg.claude.autoRestartCli = item.checked;
+        saveConfig(cfg);
+      },
+    },
+    {
       label: T("tray.startAtLogin"),
       type: "checkbox",
       checked: cfg.launchAtLogin,
@@ -225,7 +314,7 @@ function refreshTray(): void {
     })
     .filter(Boolean)
     .join(" · ");
-  tray.setToolTip(actives || "Account Rotator");
+  tray.setToolTip(actives || "LazySwitch");
 }
 
 async function manualSwitch(p: Provider, name: string): Promise<void> {
@@ -233,6 +322,8 @@ async function manualSwitch(p: Provider, name: string): Promise<void> {
   if (st.switching) return;
   st.switching = true;
   try {
+    const prefs = prefsOf(p);
+    const cliSessions = await cliHandover.detect(p);
     const accounts = p.listAccounts();
     const displayName = (slot: string | null | undefined): string =>
       slot
@@ -242,15 +333,21 @@ async function manualSwitch(p: Provider, name: string): Promise<void> {
           )
         : "?";
     // Manual switch = explicit user action; restart Desktop right away (codex).
-    const res = await switchTo(p, name, prefsOf(p), { restartDesktop: true });
-    notify(
-      `${p.displayName} — ${T("notif.switchedTitle")}`,
-      T("notif.manualSwitched", {
-        from: displayName(res.from),
-        to: displayName(res.to),
-        restarted: res.desktopRestarted ? T("notif.restartedSuffix") : "",
-      })
-    );
+    const res = await switchTo(p, name, prefs, { restartDesktop: false });
+    let desktopRestarted = false;
+    try {
+      if (p.desktop) desktopRestarted = await p.desktop.restart(prefs);
+      notify(
+        `${p.displayName} — ${T("notif.switchedTitle")}`,
+        T("notif.manualSwitched", {
+          from: displayName(res.from),
+          to: displayName(res.to),
+          restarted: desktopRestarted ? T("notif.restartedSuffix") : "",
+        })
+      );
+    } finally {
+      void cliHandover.schedule(p, cliSessions);
+    }
   } catch (e) {
     notify(`${p.displayName} — ${T("notif.switchFailed")}`, String(e));
   } finally {
@@ -365,7 +462,19 @@ async function handleLimit(p: Provider, reason: LimitReason): Promise<void> {
     st.coolingDown.set(active, Date.now() + 5 * 60 * 60 * 1000);
   }
 
-  const next = pickNextAccount(p, prefs, st.coolingDown);
+  // The cached-usage check in pickNextAccount misses accounts whose usage
+  // was never fetched this run (fresh app start). Verify each candidate with
+  // a live fetch before committing — switching to a 0%-left account just
+  // bounces straight back here.
+  let next = pickNextAccount(p, prefs, st.coolingDown);
+  while (next) {
+    const usage = await p.fetchUsage(next.name).catch(() => null);
+    if (!isExhausted(usage, prefs)) break;
+    const until = exhaustedUntil(usage, prefs) ?? Date.now() + 15 * 60_000;
+    st.coolingDown.set(next.name, until);
+    console.log(`[limit:${p.id}] skipping exhausted candidate`, next.name);
+    next = pickNextAccount(p, prefs, st.coolingDown);
+  }
   if (!next) {
     // Throttle: the monitor re-fires every poll tick while over the limit;
     // one nag per 15 minutes is plenty.
@@ -381,12 +490,13 @@ async function handleLimit(p: Provider, reason: LimitReason): Promise<void> {
   st.lastNoAccountNotify = 0;
   const fromAcc = p.listAccounts().find((a) => a.name === active) ?? null;
 
-  // Switch the live auth immediately, WITHOUT restarting Desktop: the CLI
-  // reads its auth store per invocation, so it silently picks up the new
-  // account. Only the Desktop restart below ever asks the user.
+  // Switch the live auth immediately; running CLI sessions are handed over
+  // after the auth store has been swapped successfully.
   if (st.switching) return;
   st.switching = true;
+  let cliSessions: readonly CliSession[] = [];
   try {
+    cliSessions = await cliHandover.detect(p);
     console.log(`[limit:${p.id}] switching`, active, "->", next.name);
     await switchTo(p, next.name, prefs, { restartDesktop: false });
     notify(
@@ -407,21 +517,27 @@ async function handleLimit(p: Provider, reason: LimitReason): Promise<void> {
   // Desktop keeps the old token cached in memory, so applying the switch
   // there needs a full kill + relaunch — that is the only user-approved step.
   // Providers without a desktop app (Claude) are done at this point.
-  if (!p.desktop) return;
-  const approved =
-    prefs.autoApprove || (await askApproval(p, fromAcc, next, reason));
-  if (!approved) return;
-  const ok = await p.desktop.restart(prefs);
-  notify(
-    ok
-      ? `${p.displayName} — ${T("notif.desktopRestarted")}`
-      : `${p.displayName} — ${T("notif.desktopFailed")}`,
-    ok
-      ? T("notif.desktopRestartedBody", {
-          name: accountDisplayName(next, next.name),
-        })
-      : T("notif.desktopFailedBody")
-  );
+  try {
+    if (p.desktop) {
+      const approved =
+        prefs.autoApprove || (await askApproval(p, fromAcc, next, reason));
+      if (approved) {
+        const ok = await p.desktop.restart(prefs);
+        notify(
+          ok
+            ? `${p.displayName} — ${T("notif.desktopRestarted")}`
+            : `${p.displayName} — ${T("notif.desktopFailed")}`,
+          ok
+            ? T("notif.desktopRestartedBody", {
+                name: accountDisplayName(next, next.name),
+              })
+            : T("notif.desktopFailedBody")
+        );
+      }
+    }
+  } finally {
+    void cliHandover.schedule(p, cliSessions);
+  }
 }
 
 function wireMonitors(): void {
@@ -458,6 +574,9 @@ function broadcastChanged(): void {
 
 function openManager(): void {
   if (managerWin && !managerWin.isDestroyed()) {
+    // focus() alone does not surface a minimized/hidden window on Windows.
+    if (managerWin.isMinimized()) managerWin.restore();
+    managerWin.show();
     managerWin.focus();
     return;
   }
@@ -474,6 +593,15 @@ function openManager(): void {
     },
   });
   managerWin.on("closed", () => (managerWin = null));
+  // Force-show once ready: when the app itself was launched hidden (e.g. a
+  // SW_HIDE startup state inherited from the launcher), the window's default
+  // first show can be swallowed and the manager never appears.
+  managerWin.once("ready-to-show", () => {
+    if (managerWin && !managerWin.isDestroyed()) {
+      managerWin.show();
+      managerWin.focus();
+    }
+  });
   managerWin.loadFile(rendererPath("manager.html"));
 }
 
@@ -562,6 +690,14 @@ function registerIpc(): void {
     if (res.ok) broadcastChanged();
     return res;
   });
+  // Dry-run of the CLI handover: detect + restart/resume running sessions
+  // without touching any account. Lets the user verify resume works.
+  ipcMain.handle("cli:testRestart", async (_e, pid: string) => {
+    const p = providerById(pid);
+    const sessions = await cliHandover.detect(p);
+    if (sessions.length > 0) await cliHandover.schedule(p, sessions);
+    return { ok: true, sessions: sessions.length };
+  });
   ipcMain.handle("lang:get", () => resolveLang(cfg.language));
   ipcMain.handle("open:url", (_e, url: string) => shell.openExternal(url));
   ipcMain.handle("manager:close", () => managerWin?.close());
@@ -611,12 +747,23 @@ function ensureLiveEnrolled(): void {
   }
 }
 
+function ensureCliStatusHooks(): void {
+  try {
+    installHooks();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("LazySwitch hook install failed", message);
+  }
+}
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 }
 app.on("second-instance", () => openManager());
 
 app.whenReady().then(() => {
+  ensureCliStatusHooks();
+  ensureWindowsToastShortcut();
   if (process.platform === "darwin") app.dock?.hide();
   tray = new Tray(trayIcon());
   tray.on("double-click", () => openManager());

@@ -16,6 +16,7 @@ export interface AppConfig {
 
 const CODEX_DEFAULTS: ProviderPrefs = {
   autoApprove: false,
+  autoRestartCli: false,
   desktopAppPath: "",
   desktopProcessName: process.platform === "win32" ? "Codex.exe" : "Codex",
   rotationOrder: [],
@@ -26,6 +27,7 @@ const CODEX_DEFAULTS: ProviderPrefs = {
 
 const CLAUDE_DEFAULTS: ProviderPrefs = {
   autoApprove: false, // no desktop restart for Claude — kept for shape parity
+  autoRestartCli: false,
   desktopAppPath: "",
   desktopProcessName: "",
   rotationOrder: [],
@@ -44,6 +46,7 @@ const DEFAULTS: AppConfig = {
 /** Legacy flat keys (pre multi-provider) that map into the codex section. */
 const LEGACY_CODEX_KEYS: Array<keyof ProviderPrefs> = [
   "autoApprove",
+  "autoRestartCli",
   "desktopAppPath",
   "desktopProcessName",
   "rotationOrder",

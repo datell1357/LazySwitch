@@ -4,7 +4,7 @@ import * as http from "http";
 import * as os from "os";
 import * as path from "path";
 import { shell } from "electron";
-import { Provider, PAccount, PUsage, LoginFlowResult } from "./types";
+import { Provider, PAccount, PUsage, PWindow, LoginFlowResult } from "./types";
 
 /**
  * Claude Code account provider.
@@ -166,6 +166,52 @@ function isoToMs(v: unknown): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
+function isRecord(raw: unknown): raw is Record<string, unknown> {
+  return raw !== null && typeof raw === "object" && !Array.isArray(raw);
+}
+
+function usageWindow(raw: unknown, windowMinutes: number): PWindow | null {
+  if (typeof raw === "number") {
+    return { usedPercent: raw, windowMinutes, resetsAt: null };
+  }
+  if (!isRecord(raw)) return null;
+  const data = raw;
+  const utilization = data["utilization"];
+  const percent = data["percent"];
+  const usedPercent =
+    typeof utilization === "number" ? utilization : typeof percent === "number" ? percent : null;
+  if (usedPercent === null) return null;
+  return {
+    usedPercent,
+    windowMinutes,
+    resetsAt: isoToMs(data["resets_at"] ?? data["resetsAt"]),
+  };
+}
+
+interface UsageLimitMatch {
+  readonly kind: string;
+  readonly modelDisplayName?: string;
+}
+
+function usageLimitWindow(
+  raw: unknown,
+  match: UsageLimitMatch,
+  windowMinutes: number,
+): PWindow | null {
+  if (!Array.isArray(raw)) return null;
+  const limit = raw.find((entry) => {
+    if (!isRecord(entry) || entry["kind"] !== match.kind) return false;
+    if (match.modelDisplayName === undefined) return true;
+    const scope = entry["scope"];
+    if (!isRecord(scope)) return false;
+    const model = scope["model"];
+    if (!isRecord(model)) return false;
+    const displayName = model["display_name"];
+    return typeof displayName === "string" && displayName.toLowerCase() === match.modelDisplayName;
+  });
+  return usageWindow(limit, windowMinutes);
+}
+
 async function fetchUsageFor(name: string | null): Promise<PUsage | null> {
   const key = name ?? "@live";
   const cached = usageCache.get(key);
@@ -196,26 +242,20 @@ async function fetchUsageFor(name: string | null): Promise<PUsage | null> {
       return cached?.usage ?? null;
     }
     if (!res.ok) return cached?.usage ?? null;
-    const data: any = await res.json();
+    const data = await res.json();
+    const usageData = isRecord(data) ? data : {};
+    const limits = usageData["limits"];
 
     const meta = name === null ? { oauthAccount: liveOauthAccount() } : readJson(slotMetaFile(name));
     const usage: PUsage = {
       primary:
-        typeof data?.five_hour?.utilization === "number"
-          ? {
-              usedPercent: data.five_hour.utilization,
-              windowMinutes: 300,
-              resetsAt: isoToMs(data.five_hour.resets_at),
-            }
-          : null,
+        usageWindow(usageData["five_hour"], 300) ?? usageLimitWindow(limits, { kind: "session" }, 300),
       secondary:
-        typeof data?.seven_day?.utilization === "number"
-          ? {
-              usedPercent: data.seven_day.utilization,
-              windowMinutes: 10080,
-              resetsAt: isoToMs(data.seven_day.resets_at),
-            }
-          : null,
+        usageWindow(usageData["seven_day"], 10080) ??
+        usageLimitWindow(limits, { kind: "weekly_all" }, 10080),
+      fable:
+        usageLimitWindow(limits, { kind: "weekly_scoped", modelDisplayName: "fable" }, 10080) ??
+        usageWindow(usageData["seven_day_omelette"], 10080),
       planType: cred.claudeAiOauth.subscriptionType ?? null,
       email: meta?.oauthAccount?.emailAddress ?? null,
     };
@@ -475,6 +515,9 @@ export const claudeProvider: Provider = {
     if (!cred?.claudeAiOauth) {
       throw new Error(`Account "${name}" has no credentials.json`);
     }
+    // The "@live" cache entry still holds the previous account's usage;
+    // serving it for the new account would immediately re-trigger a switch.
+    usageCache.delete("@live");
     // 1. credentials file (what the CLI authenticates with)
     writeJsonAtomic(liveCredFile(), cred, true);
     // 2. oauthAccount inside ~/.claude.json (account identity/metadata) —

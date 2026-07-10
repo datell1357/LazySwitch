@@ -3,6 +3,13 @@ import { contextBridge, ipcRenderer } from "electron";
 contextBridge.exposeInMainWorld("rotator", {
   // Approval popup
   respond: (approved: boolean) => ipcRenderer.send("approval:respond", approved),
+  cliRestartPayload: () => ipcRenderer.invoke("cli-restart:payload"),
+  cliRestartRespond: (action: string) =>
+    ipcRenderer.send("cli-restart:respond", action),
+  appNotifyPayload: () => ipcRenderer.invoke("app-notify:payload"),
+  appNotifyResize: (height: number) =>
+    ipcRenderer.send("app-notify:resize", height),
+  appNotifyDismiss: () => ipcRenderer.send("app-notify:dismiss"),
 
   // Account manager window (provider-scoped)
   providers: () => ipcRenderer.invoke("providers:list"),
@@ -17,6 +24,8 @@ contextBridge.exposeInMainWorld("rotator", {
     ipcRenderer.invoke("accounts:importCurrent", provider, name),
   addViaLogin: (provider: string) =>
     ipcRenderer.invoke("accounts:addViaLogin", provider),
+  testCliRestart: (provider: string) =>
+    ipcRenderer.invoke("cli:testRestart", provider),
   getConfig: () => ipcRenderer.invoke("config:get"),
   getLang: () => ipcRenderer.invoke("lang:get"),
   setConfig: (patch: unknown) => ipcRenderer.invoke("config:set", patch),

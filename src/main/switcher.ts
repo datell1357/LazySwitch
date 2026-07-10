@@ -1,4 +1,4 @@
-import { Provider, PAccount, ProviderPrefs } from "./providers/types";
+import { Provider, PAccount, ProviderPrefs, PUsage, PWindow } from "./providers/types";
 
 /** Order in which accounts are considered for rotation. */
 export function rotationList(provider: Provider, prefs: ProviderPrefs): PAccount[] {
@@ -13,7 +13,64 @@ export function rotationList(provider: Provider, prefs: ProviderPrefs): PAccount
   return ordered;
 }
 
-/** Pick the next account after the currently active one, skipping cooling-down ones. */
+function spentWindow(
+  w: PWindow | null | undefined,
+  minLeftPct: number,
+  now: number
+): boolean {
+  return (
+    !!w &&
+    (w.resetsAt === null || w.resetsAt > now) &&
+    100 - w.usedPercent <= minLeftPct
+  );
+}
+
+/**
+ * True when the last known usage says the account would trip the switch
+ * thresholds immediately. A window whose reset time has passed no longer
+ * counts — the quota is back even if the cache is stale.
+ */
+export function isExhausted(
+  usage: PUsage | null,
+  prefs: ProviderPrefs,
+  now = Date.now()
+): boolean {
+  if (!usage) return false;
+  return (
+    spentWindow(usage.primary, prefs.primaryMinLeftPct, now) ||
+    spentWindow(usage.secondary, prefs.weeklyMinLeftPct, now)
+  );
+}
+
+/**
+ * When the account is exhausted, the epoch ms at which its last blocking
+ * window resets — null if it is not exhausted or no reset time is known
+ * (callers should fall back to a short cooldown).
+ */
+export function exhaustedUntil(
+  usage: PUsage | null,
+  prefs: ProviderPrefs,
+  now = Date.now()
+): number | null {
+  if (!usage) return null;
+  let until: number | null = null;
+  const windows: Array<[PWindow | null | undefined, number]> = [
+    [usage.primary, prefs.primaryMinLeftPct],
+    [usage.secondary, prefs.weeklyMinLeftPct],
+  ];
+  for (const [w, minLeftPct] of windows) {
+    if (!spentWindow(w, minLeftPct, now)) continue;
+    if (w!.resetsAt === null) return null;
+    until = until === null ? w!.resetsAt : Math.max(until, w!.resetsAt);
+  }
+  return until;
+}
+
+/**
+ * Pick the next account after the currently active one, skipping cooling-down
+ * ones and ones whose cached usage is already at the limit — switching to
+ * those would just bounce straight back here.
+ */
 export function pickNextAccount(
   provider: Provider,
   prefs: ProviderPrefs,
@@ -30,6 +87,7 @@ export function pickNextAccount(
     const cand = list[(startIdx + i) % list.length];
     if (cand.name === activeName) continue;
     if (coolingDown.has(cand.name)) continue;
+    if (isExhausted(provider.cachedUsage?.(cand.name) ?? null, prefs)) continue;
     return cand;
   }
   return null;

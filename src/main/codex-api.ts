@@ -38,6 +38,15 @@ export function cachedUsage(file: string): CodexUsage | null {
   return usageCache.get(file)?.usage ?? null;
 }
 
+/**
+ * Forget cached usage for `file`. Must be called when a different account's
+ * auth is installed at that path — otherwise the previous account's (often
+ * exhausted) usage keeps being served for it and re-triggers a switch.
+ */
+export function invalidateUsage(file: string): void {
+  usageCache.delete(file);
+}
+
 function writeAuthAtomic(file: string, auth: CodexAuth): void {
   const tmp = file + ".tmp-" + process.pid + "-" + Date.now();
   fs.writeFileSync(tmp, JSON.stringify(auth, null, 2), "utf8");
@@ -132,7 +141,7 @@ export async function fetchUsage(file: string): Promise<CodexUsage | null> {
     const headers: Record<string, string> = {
       Authorization: "Bearer " + a.tokens!.access_token,
       Accept: "application/json",
-      "User-Agent": "codex-account-rotator",
+      "User-Agent": "LazySwitch",
     };
     if (a.tokens?.account_id) headers["ChatGPT-Account-Id"] = a.tokens.account_id;
     return fetch(USAGE_URL, { method: "GET", headers });

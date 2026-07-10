@@ -1,0 +1,248 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <style>
+      :root {
+        --bg: #16171b;
+        --card: #1e2026;
+        --line: #2c2f38;
+        --text: #e8e9ec;
+        --muted: #9aa0ac;
+        --accent: #10a37f;
+        --accent-hi: #14c493;
+        --warn: #e5a13a;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        color: var(--text);
+        user-select: none;
+      }
+      .card {
+        height: 100vh;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 20px 22px;
+        display: flex;
+        flex-direction: column;
+        -webkit-app-region: drag;
+      }
+      .head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+      .dot {
+        width: 9px; height: 9px; border-radius: 50%;
+        background: var(--warn); box-shadow: 0 0 10px var(--warn);
+      }
+      .title { font-size: 15px; font-weight: 600; }
+      .sub { font-size: 12px; color: var(--muted); margin: 2px 0 12px; line-height: 1.45; }
+      .safety {
+        border: 1px solid #e5a13a44;
+        background: #e5a13a14;
+        color: #e8c58c;
+        border-radius: 9px;
+        padding: 8px 10px;
+        font-size: 11px;
+        line-height: 1.4;
+        margin-bottom: 12px;
+      }
+      .command {
+        display: flex; align-items: center; gap: 8px;
+        border: 1px solid var(--line);
+        background: #101216;
+        border-radius: 9px;
+        padding: 9px 10px;
+        margin-bottom: 12px;
+      }
+      .command span { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+      code {
+        color: #d8fbef;
+        font-family: "Cascadia Mono", Consolas, monospace;
+        font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .list {
+        display: grid; gap: 8px; overflow: auto;
+        max-height: 215px;
+        padding-right: 2px;
+        -webkit-app-region: no-drag;
+      }
+      .session {
+        border: 1px solid var(--line);
+        background: #181a20;
+        border-radius: 10px;
+        padding: 10px 11px;
+      }
+      .cwd {
+        font-size: 12px;
+        font-weight: 600;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
+      .unknown .cwd { color: var(--warn); }
+      .spacer { flex: 1; min-height: 12px; }
+      .actions { display: flex; gap: 9px; -webkit-app-region: no-drag; }
+      button {
+        flex: 1; padding: 11px 8px;
+        font-size: 12px;
+        font-weight: 700;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        cursor: pointer;
+        transition: background .12s, border-color .12s, color .12s;
+      }
+      .later { background: transparent; color: var(--muted); }
+      .later:hover { background: #2a2d36; color: var(--text); }
+      .copy { background: #252832; color: var(--text); }
+      .copy:hover { background: #2f3340; }
+      .restart { background: var(--accent); border-color: var(--accent); color: #fff; }
+      .restart:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
+      button:disabled { opacity: .55; cursor: default; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="head">
+        <span class="dot"></span>
+        <span class="title" id="title">CLI sessions still running</span>
+      </div>
+      <div class="sub" id="sub"></div>
+      <div class="safety" id="safety"></div>
+      <div class="command">
+        <span id="cmdLabel">Resume</span>
+        <code id="cmd"></code>
+      </div>
+      <div class="list" id="sessions"></div>
+      <div class="spacer"></div>
+      <div class="actions">
+        <button class="later" id="later">Later</button>
+        <button class="copy" id="copy">Copy command</button>
+        <button class="restart" id="restart">Restart & Resume</button>
+      </div>
+    </div>
+
+    <script>
+      const q = new URLSearchParams(location.search);
+      const DICTS = {
+        en: {
+          title: "CLI sessions still running",
+          sub: "{provider} sessions below still use the previous account.",
+          safety: "Restarting kills any in-flight turn; the resume command restores the conversation transcript, not work that was mid-flight.",
+          cmd: "Resume",
+          unknown: "Location unavailable",
+          started: "Started",
+          timeUnknown: "start time unavailable",
+          restart: "Restart & Resume",
+          copy: "Copy command",
+          later: "Later",
+          empty: "No sessions detected.",
+        },
+        ko: {
+          title: "실행 중인 CLI 세션",
+          sub: "아래 {provider} 세션은 아직 이전 계정을 사용 중입니다.",
+          safety: "재시작하면 진행 중인 턴은 종료됩니다. 재개 명령은 대화 기록만 복원하며, 진행 중이던 작업 자체는 복원하지 않습니다.",
+          cmd: "재개",
+          unknown: "위치 확인 불가",
+          started: "시작",
+          timeUnknown: "시작 시간 확인 불가",
+          restart: "재시작 & 재개",
+          copy: "명령 복사",
+          later: "나중에",
+          empty: "감지된 세션이 없습니다.",
+        },
+        ja: {
+          title: "実行中の CLI セッション",
+          sub: "以下の {provider} セッションはまだ以前のアカウントを使用しています。",
+          safety: "再起動すると進行中のターンは終了します。再開コマンドが復元するのは会話履歴であり、途中だった作業そのものではありません。",
+          cmd: "再開",
+          unknown: "場所を確認できません",
+          started: "開始",
+          timeUnknown: "開始時刻を確認できません",
+          restart: "再起動して再開",
+          copy: "コマンドをコピー",
+          later: "後で",
+          empty: "検出されたセッションはありません。",
+        },
+        zh: {
+          title: "仍在运行的 CLI 会话",
+          sub: "下面的 {provider} 会话仍在使用之前的账号。",
+          safety: "重启会终止正在进行的回合；恢复命令只恢复对话记录，不会恢复执行到一半的工作。",
+          cmd: "恢复",
+          unknown: "无法确认位置",
+          started: "开始时间",
+          timeUnknown: "无法确认开始时间",
+          restart: "重启并恢复",
+          copy: "复制命令",
+          later: "稍后",
+          empty: "未检测到会话。",
+        },
+      };
+      const L = DICTS[q.get("lang")] || DICTS.en;
+      const $ = (id) => document.getElementById(id);
+      const fmt = (s, vars) =>
+        Object.entries(vars).reduce((a, [k, v]) => a.replace("{" + k + "}", v), s);
+      const esc = (s) => (s || "").replace(/[&<>"]/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+      function startTimeText(value) {
+        if (!value) return L.timeUnknown;
+        const d = new Date(value);
+        if (!Number.isFinite(d.getTime())) return L.timeUnknown;
+        return d.toLocaleString([], { hour: "2-digit", minute: "2-digit", year: "numeric", month: "2-digit", day: "2-digit" });
+      }
+
+      function renderSessions(sessions) {
+        if (!sessions.length) {
+          $("sessions").innerHTML = `<div class="sub">${L.empty}</div>`;
+          return;
+        }
+        $("sessions").innerHTML = sessions.map((s) => {
+          const known = !!s.cwd;
+          const cwd = known ? s.cwd : L.unknown;
+          return `<div class="session ${known ? "" : "unknown"}">
+            <div class="cwd" title="${esc(cwd)}">${esc(cwd)}</div>
+            <div class="meta">PID ${esc(String(s.pid))} · ${L.started}: ${esc(startTimeText(s.startTime))}</div>
+          </div>`;
+        }).join("");
+      }
+
+      function respond(action) {
+        document.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+        window.rotator.cliRestartRespond(action);
+      }
+
+      async function init() {
+        const payload = await window.rotator.cliRestartPayload();
+        if (!payload) {
+          $("title").textContent = L.title;
+          $("sub").textContent = L.empty;
+          return;
+        }
+        $("title").textContent = L.title;
+        $("sub").textContent = fmt(L.sub, { provider: payload.providerName });
+        $("safety").textContent = L.safety;
+        $("cmdLabel").textContent = L.cmd;
+        $("cmd").textContent = payload.resumeCommand;
+        $("restart").textContent = L.restart;
+        $("copy").textContent = L.copy;
+        $("later").textContent = L.later;
+        renderSessions(payload.sessions || []);
+      }
+
+      $("restart").addEventListener("click", () => respond("restart"));
+      $("copy").addEventListener("click", () => respond("copy"));
+      $("later").addEventListener("click", () => respond("later"));
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") respond("restart");
+        else if (e.key === "Escape") respond("later");
+      });
+      init();
+    </script>
+  </body>
+</html>

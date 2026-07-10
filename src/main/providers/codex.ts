@@ -13,7 +13,7 @@ import {
   emailFromAuth,
   deriveSlotName,
 } from "../accounts";
-import { cachedUsage, fetchUsage } from "../codex-api";
+import { cachedUsage, fetchUsage, invalidateUsage } from "../codex-api";
 import { restartDesktopApp } from "../desktop";
 import { addAccountViaLogin } from "../login";
 
@@ -210,6 +210,9 @@ export const codexProvider: Provider = {
       throw new Error(`Account "${name}" has no auth.json`);
     }
     atomicCopy(accountAuthFile(name), liveAuthFile());
+    // The live-file cache still holds the previous account's usage; serving
+    // it for the new account would immediately re-trigger a switch.
+    invalidateUsage(liveAuthFile());
   },
 
   fetchUsage: usageFor,

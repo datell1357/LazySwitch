@@ -1,8 +1,11 @@
 {
-  "name": "codex-account-rotator",
+  "name": "lazyswitch",
   "version": "0.1.0",
   "description": "Auto-rotate Codex CLI/Desktop accounts when usage limits are hit",
   "main": "dist/main/index.js",
+  "bin": {
+    "lazyswitch": "dist/main/cli.js"
+  },
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w",
@@ -19,8 +22,9 @@
     "typescript": "^5.6.0"
   },
   "build": {
-    "appId": "com.local.codex-account-rotator",
-    "productName": "Codex Account Rotator",
+    "appId": "com.local.lazyswitch",
+    "productName": "LazySwitch",
+    "directories": { "output": "release" },
     "files": ["dist/**/*", "src/renderer/**/*", "assets/**/*"],
     "win": { "target": "nsis" },
     "nsis": {
