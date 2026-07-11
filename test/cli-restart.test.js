@@ -7,617 +7,255 @@ const test = require("node:test");
 
 const claudeSessions = require("../dist/main/claude-sessions.js");
 const codexRollouts = require("../dist/main/codex-rollouts.js");
-const {
-  decideConsoleResumeRoute,
-  recordCliRestartOutcome,
-} = require("../dist/main/cli-resume-routing.js");
-const {
-  formatResumeCommandForShell,
-  pairOrcaTerminalHandles,
-  restartCliSessions,
-  resumeCommandFor,
-} = require("../dist/main/cli-sessions.js");
+const { recordCliRestartOutcome } = require("../dist/main/cli-resume-routing.js");
+const { restartCliSessions, resumeCommandFor } = require("../dist/main/cli-sessions.js");
 
-test("console resume routing defers a console session when unelevated termination leaves it alive", () => {
-  const route = decideConsoleResumeRoute({
-    stopped: false,
-    hasTerminal: true,
-    injection: null,
-  });
+const EMPTY = { restarted: 0, closed: 0, manual: 0, failed: 0 };
 
-  assert.equal(route, "elevate");
-});
-
-test("console resume routing defers an ACCESS_DENIED injection but not another injection failure", () => {
-  const deniedRoute = decideConsoleResumeRoute({
-    stopped: true,
-    hasTerminal: true,
-    injection: "access-denied",
-  });
-  const failedRoute = decideConsoleResumeRoute({
-    stopped: true,
-    hasTerminal: true,
-    injection: "failed",
-  });
-
-  assert.equal(deniedRoute, "elevate");
-  assert.equal(failedRoute, "fallback");
-});
-
-test("restart accounting records an elevated in-place resume without double counting", () => {
-  const result = recordCliRestartOutcome(
-    { restarted: 0, resumedInPlace: 0, manual: 0, failed: 0 },
-    "resumed-in-place"
-  );
-
-  assert.deepEqual(result, { restarted: 0, resumedInPlace: 1, manual: 0, failed: 0 });
-});
-
-test("restart accounting keeps UAC cancellation fallback recoverable", () => {
-  const result = recordCliRestartOutcome(
-    { restarted: 0, resumedInPlace: 0, manual: 0, failed: 0 },
-    "restarted"
-  );
-
-  assert.deepEqual(result, { restarted: 1, resumedInPlace: 0, manual: 0, failed: 0 });
-});
-
-function mockRestartRuntime(t, hasWt = true) {
-  const launches = [];
-  t.mock.method(
-    childProcess,
-    "execFile",
-    (file, _args, _options, callback) => {
-      if (path.basename(file).toLowerCase() === "where.exe" && !hasWt) {
-        callback(new Error("not found"), "", "");
-        return;
-      }
-      callback(null, "", "");
-    }
-  );
-  t.mock.method(childProcess, "spawn", (command, args, options) => {
-    launches.push({ command, args, options });
-    return {
-      on() {
-        return this;
-      },
-      unref() {},
-    };
-  });
-  t.mock.method(process, "kill", () => {
-    throw new Error("not running");
-  });
-  t.mock.method(global, "setTimeout", (callback) => {
-    callback();
-    return 0;
-  });
-  return launches;
+function shell(name, overrides = {}) {
+  return { pid: 51, name, isOrcaHosted: false, ...overrides };
 }
 
-test("restartCliSessions resumes distinct Codex sessions in matched rollout directories", async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const firstCwd = path.join(root, "first");
-  const secondCwd = path.join(root, "second");
-  fs.mkdirSync(firstCwd);
-  fs.mkdirSync(secondCwd);
-  const launches = mockRestartRuntime(t);
-  const ids = ["first-session", "second-session", "missing-cwd-session"];
-  const matchedCwds = [firstCwd, secondCwd, path.join(root, "missing")];
-  let call = 0;
-  t.mock.method(
-    codexRollouts,
-    "findCodexRolloutForProcess",
-    async (_session, _root, claimed) => {
-      assert.deepEqual([...claimed], ids.slice(0, call));
-      const index = call++;
-      return {
-        sessionId: ids[index],
-        cwd: "\\\\?\\" + matchedCwds[index],
-        file: path.join(root, `${ids[index]}.jsonl`),
-        mtimeMs: index,
-      };
-    }
-  );
-
-  const result = await restartCliSessions(
-    [
-      { providerId: "codex", pid: 101, startTime: null, cwd: null },
-      { providerId: "codex", pid: 102, startTime: null, cwd: null },
-      { providerId: "codex", pid: 103, startTime: null, cwd: null },
-    ],
-    resumeCommandFor({ id: "codex" })
-  );
-
-  assert.deepEqual(result, { restarted: 3, resumedInPlace: 0, manual: 0, failed: 0 });
-  assert.deepEqual(launches.map(({ command, args }) => ({ command, args })), [
-    {
-      command: "wt.exe",
-      args: ["-d", firstCwd, "codex", "resume", "first-session"],
-    },
-    {
-      command: "wt.exe",
-      args: ["-d", secondCwd, "codex", "resume", "second-session"],
-    },
-    {
-      command: "wt.exe",
-      args: ["-d", os.homedir(), "codex", "resume", "missing-cwd-session"],
-    },
-  ]);
-});
-
-test("restartCliSessions resumes Claude by id and preserves fallbacks", async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const exactCwd = path.join(root, "exact");
-  const fallbackCwd = path.join(root, "fallback");
-  fs.mkdirSync(exactCwd);
-  fs.mkdirSync(fallbackCwd);
-  const launches = mockRestartRuntime(t);
-  const matches = [
-    {
-      sessionId: "exact-session",
-      cwd: "\\\\?\\" + exactCwd,
-      file: path.join(root, "exact.jsonl"),
-      mtimeMs: 1,
-    },
-    {
-      sessionId: "missing-session",
-      cwd: path.join(root, "missing"),
-      file: path.join(root, "missing.jsonl"),
-      mtimeMs: 2,
-    },
-    null,
-  ];
-  let call = 0;
-  t.mock.method(
-    claudeSessions,
-    "findClaudeSessionForProcess",
-    async (_session, _root, claimed) => {
-      assert.equal(claimed.size, call);
-      return matches[call++];
-    }
-  );
-
-  const result = await restartCliSessions(
-    [
-      { providerId: "claude", pid: 201, startTime: null, cwd: null },
-      { providerId: "claude", pid: 202, startTime: null, cwd: fallbackCwd },
-      { providerId: "claude", pid: 203, startTime: null, cwd: null },
-    ],
-    resumeCommandFor({ id: "claude" })
-  );
-
-  assert.deepEqual(result, { restarted: 2, resumedInPlace: 0, manual: 1, failed: 0 });
-  assert.deepEqual(launches.map(({ command, args }) => ({ command, args })), [
-    {
-      command: "wt.exe",
-      args: ["-d", exactCwd, "claude", "--resume", "exact-session"],
-    },
-    {
-      command: "wt.exe",
-      args: ["-d", fallbackCwd, "claude", "--continue"],
-    },
-  ]);
-});
-
-test("restartCliSessions keeps metadata out of the PowerShell command text", async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
-  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
-  const launches = mockRestartRuntime(t, false);
-  t.mock.method(
-    codexRollouts,
-    "findCodexRolloutForProcess",
-    async () => ({
-      sessionId: "safe-session-id",
-      cwd,
-      file: path.join(cwd, "rollout.jsonl"),
-      mtimeMs: 1,
-    })
-  );
-
-  const result = await restartCliSessions(
-    [{ providerId: "codex", pid: 301, startTime: null, cwd }],
-    resumeCommandFor({ id: "codex" })
-  );
-
-  assert.deepEqual(result, { restarted: 1, resumedInPlace: 0, manual: 0, failed: 0 });
-  assert.equal(path.isAbsolute(launches[0]?.command), true);
-  assert.equal(path.basename(launches[0]?.command).toLowerCase(), "cmd.exe");
-  assert.deepEqual(launches[0]?.args.slice(0, 4), [
-    "/d",
-    "/c",
-    "start",
-    "",
-  ]);
-  assert.equal(path.isAbsolute(launches[0]?.args[4]), true);
-  assert.equal(
-    path.basename(launches[0]?.args[4]).toLowerCase(),
-    "powershell.exe"
-  );
-  assert.deepEqual(launches[0]?.args.slice(5, 7), [
-    "-NoExit",
-    "-EncodedCommand",
-  ]);
-  assert.equal(launches[0]?.args.includes("safe-session-id"), false);
-  assert.equal(launches[0]?.args.includes(cwd), false);
-  assert.equal(launches[0]?.options.cwd, cwd);
-  assert.equal(
-    launches[0]?.options.env.LAZYSWITCH_CLI_COMMAND,
-    "codex"
-  );
-  assert.deepEqual(
-    JSON.parse(launches[0]?.options.env.LAZYSWITCH_CLI_ARGS),
-    ["resume", "safe-session-id"]
-  );
-});
-
-test("in-place resume only pairs an unambiguous Orca terminal and quotes for each shell", () => {
-  const first = {
-    providerId: "codex",
-    pid: 1,
-    startTime: null,
-    cwd: "D:\\Work\\Same",
-    terminal: { pid: 11, name: "powershell.exe", isOrcaHosted: true },
-  };
-  const second = {
-    ...first,
-    pid: 2,
-    terminal: { pid: 12, name: "cmd.exe", isOrcaHosted: true },
-  };
-  const ambiguousHandles = pairOrcaTerminalHandles(
-    [first, second],
-    [
-      { handle: "first", worktreePath: "d:/work/same" },
-      { handle: "second", worktreePath: "D:/Work/Same" },
-    ]
-  );
-
-  assert.deepEqual([...ambiguousHandles.entries()], []);
-  const unambiguousHandles = pairOrcaTerminalHandles(
-    [first],
-    [{ handle: "first", worktreePath: "d:/work/same" }]
-  );
-  assert.deepEqual([...unambiguousHandles.entries()], [[1, "first"]]);
-  const sharedPaneHandles = pairOrcaTerminalHandles(
-    [first, second],
-    [{ handle: "first", worktreePath: "d:/work/same" }]
-  );
-  assert.deepEqual([...sharedPaneHandles.entries()], []);
-  assert.equal(
-    formatResumeCommandForShell(
-      "D:\\O'Brien & Work",
-      { text: "codex resume abc-123", command: "codex", args: ["resume", "abc-123"] },
-      "powershell.exe"
-    ),
-    "cd 'D:\\O''Brien & Work'; codex resume abc-123"
-  );
-  assert.equal(
-    formatResumeCommandForShell(
-      "D:\\Work & Notes",
-      { text: "claude --continue", command: "claude", args: ["--continue"] },
-      "cmd.exe"
-    ),
-    'cd /d "D:\\Work & Notes" && claude --continue'
-  );
-  assert.equal(
-    formatResumeCommandForShell(
-      "D:\\O'Brien & Work",
-      { text: "codex resume abc-123", command: "codex", args: ["resume", "abc-123"] },
-      "bash.exe"
-    ),
-    "cd -- 'D:\\O'\\''Brien & Work' && codex resume abc-123"
-  );
-});
-
-test("restartCliSessions tries console injection before an unambiguous Orca fallback", async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const orcaCwd = path.join(root, "orca");
-  const fallbackCwd = path.join(root, "fallback");
-  fs.mkdirSync(orcaCwd);
-  fs.mkdirSync(fallbackCwd);
+/**
+ * Stubs the process-control surface restartCliSessions drives: `where` lookups,
+ * `taskkill`, the orca CLI, and the terminal launchers. Returns the recorded
+ * calls so a test can assert what the restart actually did.
+ */
+function stubRestart(
+  t,
+  { hasWt = true, hasOrca = false, orcaTerminals = [], unkillable = [], orcaCreateFails = false } = {}
+) {
+  const killed = [];
   const launches = [];
-  const calls = [];
+  const orcaCreates = [];
+
   t.mock.method(childProcess, "execFile", (file, args, _options, callback) => {
-    calls.push({ file, args });
-    if (path.basename(file).toLowerCase() === "where.exe") {
+    const exe = path.basename(String(file)).toLowerCase();
+    if (exe === "where.exe") {
+      const wanted = String(args[0]).toLowerCase();
+      if (wanted === "wt.exe" && hasWt) callback(null, "C:\\wt.exe\r\n", "");
+      else if (wanted === "orca" && hasOrca) callback(null, "C:\\orca\\orca.cmd\r\n", "");
+      else callback(new Error("not found"), "", "not found");
+      return;
+    }
+    if (exe === "taskkill.exe") {
+      killed.push(Number(args[1]));
       callback(null, "", "");
       return;
     }
-    if (file === "orca" && args[1] === "list") {
-      callback(null, JSON.stringify({ ok: true, result: { terminals: [{ handle: "orca-pane", worktreePath: orcaCwd }] } }), "");
-      return;
-    }
-    if (file === "orca" && args[1] === "send") {
-      callback(null, JSON.stringify({ ok: true }), "");
-      return;
-    }
-    if (path.basename(file).toLowerCase() === "powershell.exe") {
-      callback(null, JSON.stringify({ ok: false }), "");
-      return;
+    // orca is a .cmd shim, so it is invoked through cmd.exe /d /c <path> ...
+    if (exe === "cmd.exe" && String(args[2] ?? "").toLowerCase().endsWith("orca.cmd")) {
+      const orcaArgs = args.slice(3);
+      if (orcaArgs[1] === "list") {
+        callback(null, JSON.stringify({ ok: true, result: { terminals: orcaTerminals } }), "");
+        return;
+      }
+      if (orcaArgs[1] === "create") {
+        orcaCreates.push({ worktree: orcaArgs[3], command: orcaArgs[5] });
+        callback(null, JSON.stringify({ ok: !orcaCreateFails }), "");
+        return;
+      }
     }
     callback(null, "", "");
   });
+
   t.mock.method(childProcess, "spawn", (command, args, options) => {
     launches.push({ command, args, options });
     return { on() { return this; }, unref() {} };
   });
-  t.mock.method(process, "kill", () => { throw new Error("not running"); });
+
+  // A pid in `unkillable` survives taskkill, standing in for an elevated shell.
+  t.mock.method(process, "kill", (pid) => {
+    if (unkillable.includes(pid)) return undefined;
+    throw new Error("ESRCH");
+  });
   t.mock.method(global, "setTimeout", (callback) => { callback(); return 0; });
+
+  return { killed, launches, orcaCreates };
+}
+
+test("restart accounting records each session in exactly one bucket", () => {
+  assert.deepEqual(recordCliRestartOutcome(EMPTY, "restarted"), { ...EMPTY, restarted: 1 });
+  assert.deepEqual(recordCliRestartOutcome(EMPTY, "manual"), { ...EMPTY, manual: 1 });
+  assert.deepEqual(recordCliRestartOutcome(EMPTY, "failed"), { ...EMPTY, failed: 1 });
+});
+
+test("a codex session closes its old shell and reopens in a new terminal", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const calls = stubRestart(t);
+  t.mock.method(codexRollouts, "findCodexRolloutForProcess", async () => null);
+
+  const result = await restartCliSessions(
+    [{ providerId: "codex", pid: 501, startTime: null, cwd, terminal: shell("powershell.exe") }],
+    resumeCommandFor({ id: "codex" })
+  );
+
+  assert.deepEqual(result, { restarted: 1, closed: 1, manual: 0, failed: 0 });
+  assert.deepEqual(calls.killed, [501, 51]); // CLI first, then its shell
+  assert.equal(calls.launches.length, 1);
+  assert.equal(calls.launches[0].command, "wt.exe");
+  assert.deepEqual(calls.launches[0].args, ["-d", cwd, "codex", "resume"]);
+});
+
+test("a claude session reopens with the resolved session id in a new terminal", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const calls = stubRestart(t);
+  t.mock.method(claudeSessions, "findClaudeSessionForProcess", async () => ({
+    sessionId: "abc-123",
+    cwd,
+  }));
+
+  const result = await restartCliSessions(
+    [{ providerId: "claude", pid: 601, startTime: null, cwd, terminal: shell("cmd.exe") }],
+    resumeCommandFor({ id: "claude" })
+  );
+
+  assert.deepEqual(result, { restarted: 1, closed: 1, manual: 0, failed: 0 });
+  assert.deepEqual(calls.launches[0].args, ["-d", cwd, "claude", "--resume", "abc-123"]);
+});
+
+test("an elevated shell that survives taskkill still gets a new terminal", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const calls = stubRestart(t, { unkillable: [51] });
+  t.mock.method(codexRollouts, "findCodexRolloutForProcess", async () => null);
+
+  const result = await restartCliSessions(
+    [{ providerId: "codex", pid: 501, startTime: null, cwd, terminal: shell("powershell.exe") }],
+    resumeCommandFor({ id: "codex" })
+  );
+
+  assert.deepEqual(result, { restarted: 1, closed: 0, manual: 0, failed: 0 });
+  assert.equal(calls.launches.length, 1);
+});
+
+test("a terminal emulator host is never closed, only the new terminal opens", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const calls = stubRestart(t);
+  t.mock.method(codexRollouts, "findCodexRolloutForProcess", async () => null);
+
+  const result = await restartCliSessions(
+    [{ providerId: "codex", pid: 501, startTime: null, cwd, terminal: shell("WindowsTerminal.exe") }],
+    resumeCommandFor({ id: "codex" })
+  );
+
+  assert.deepEqual(result, { restarted: 1, closed: 0, manual: 0, failed: 0 });
+  assert.deepEqual(calls.killed, [501]); // the emulator may own other tabs
+});
+
+test("an orca session reopens as a new orca terminal in its worktree", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const calls = stubRestart(t, {
+    hasOrca: true,
+    orcaTerminals: [
+      { worktreeId: "wt-1", worktreePath: cwd.replace(/\\/g, "/") },
+      { worktreeId: "wt-1", worktreePath: cwd.replace(/\\/g, "/") },
+    ],
+  });
   t.mock.method(codexRollouts, "findCodexRolloutForProcess", async () => null);
 
   const result = await restartCliSessions(
     [
       {
-        providerId: "codex", pid: 401, startTime: null, cwd: orcaCwd,
-        terminal: { pid: 41, name: "powershell.exe", isOrcaHosted: true },
+        providerId: "codex",
+        pid: 501,
+        startTime: null,
+        cwd,
+        terminal: shell("powershell.exe", { isOrcaHosted: true }),
       },
-      { providerId: "codex", pid: 402, startTime: null, cwd: fallbackCwd, terminal: null },
     ],
     resumeCommandFor({ id: "codex" })
   );
 
-  assert.deepEqual(result, { restarted: 1, resumedInPlace: 1, manual: 0, failed: 0 });
-  const helperIndex = calls.findIndex(({ file }) => path.basename(file).toLowerCase() === "powershell.exe");
-  const sendIndex = calls.findIndex(({ file, args }) => file === "orca" && args[1] === "send");
-  assert.equal(helperIndex >= 0, true);
-  assert.equal(sendIndex > helperIndex, true);
-  const helper = calls[helperIndex];
-  const injectionScript = Buffer.from(helper.args.at(-1), "base64").toString("utf16le");
-  assert.match(injectionScript, /AttachConsole/);
-  assert.match(injectionScript, /\$consoleInput/);
-  assert.doesNotMatch(injectionScript, /\$input\s*=/);
-  assert.match(injectionScript, /\$ProgressPreference = 'SilentlyContinue'/);
-  assert.match(injectionScript, /exit 0/);
-  assert.match(injectionScript, /exit 1/);
-  assert.match(injectionScript, /nativeErrorCode/);
-  assert.match(injectionScript, /\[uint32\]3221225472/);
-  assert.doesNotMatch(injectionScript, /\[uint32\]0xC0000000/);
-  assert.deepEqual(launches.map(({ command, args }) => ({ command, args })), [
-    { command: "wt.exe", args: ["-d", fallbackCwd, "codex", "resume"] },
-  ]);
+  assert.deepEqual(result, { restarted: 1, closed: 1, manual: 0, failed: 0 });
+  // Two panes share the worktree, but creating a terminal needs no pane identity.
+  assert.equal(calls.orcaCreates.length, 1);
+  assert.equal(calls.orcaCreates[0].worktree, "id:wt-1");
+  assert.equal(calls.orcaCreates[0].command, "codex resume");
+  assert.equal(calls.launches.length, 0); // no stray window outside orca
 });
 
-test("restartCliSessions never sends through Orca when its worktree has multiple panes", async (t) => {
+test("an orca session falls back to a window when orca cannot open a terminal", async (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
-  const calls = [];
-  const launches = [];
-  t.mock.method(childProcess, "execFile", (file, args, _options, callback) => {
-    calls.push({ file, args });
-    if (path.basename(file).toLowerCase() === "where.exe") {
-      callback(null, "", "");
-      return;
-    }
-    if (file === "orca" && args[1] === "list") {
-      callback(null, JSON.stringify({ ok: true, result: { terminals: [
-        { handle: "claude-pane", worktreePath: cwd },
-        { handle: "codex-pane", worktreePath: cwd },
-      ] } }), "");
-      return;
-    }
-    if (path.basename(file).toLowerCase() === "powershell.exe") {
-      callback(null, JSON.stringify({ ok: false }), "");
-      return;
-    }
-    callback(null, "", "");
+  const calls = stubRestart(t, {
+    hasOrca: true,
+    orcaCreateFails: true,
+    orcaTerminals: [{ worktreeId: "wt-1", worktreePath: cwd }],
   });
-  t.mock.method(childProcess, "spawn", (command, args, options) => {
-    launches.push({ command, args, options });
-    return { on() { return this; }, unref() {} };
-  });
-  t.mock.method(process, "kill", () => { throw new Error("not running"); });
-  t.mock.method(global, "setTimeout", (callback) => { callback(); return 0; });
   t.mock.method(codexRollouts, "findCodexRolloutForProcess", async () => null);
 
   const result = await restartCliSessions(
-    [{
-      providerId: "codex", pid: 501, startTime: null, cwd,
-      terminal: { pid: 51, name: "powershell.exe", isOrcaHosted: true },
-    }],
+    [
+      {
+        providerId: "codex",
+        pid: 501,
+        startTime: null,
+        cwd,
+        terminal: shell("powershell.exe", { isOrcaHosted: true }),
+      },
+    ],
     resumeCommandFor({ id: "codex" })
   );
 
-  assert.deepEqual(result, { restarted: 1, resumedInPlace: 0, manual: 0, failed: 0 });
-  assert.equal(
-    calls.some(({ file, args }) => file === "orca" && args[1] === "send"),
-    false
-  );
-  assert.equal(
-    calls.some(({ file }) => path.basename(file).toLowerCase() === "powershell.exe"),
-    true
-  );
-  assert.equal(
-    calls.some(({ file, args }) =>
-      path.basename(file).toLowerCase() === "powershell.exe" &&
-      Buffer.from(args.at(-1), "base64").toString("utf16le").includes("Start-Process")
-    ),
-    false
-  );
-  assert.equal(launches.length, 1);
+  assert.deepEqual(result, { restarted: 1, closed: 1, manual: 0, failed: 0 });
+  assert.equal(calls.orcaCreates.length, 1); // tried orca first
+  assert.equal(calls.launches.length, 1); // then opened a window instead
 });
 
-test("restartCliSessions keeps a successful console injection in place when the helper exits non-zero", async (t) => {
+test("an orca session whose worktree is unknown opens a window instead of guessing", async (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
-  const launches = [];
-  t.mock.method(childProcess, "execFile", (file, _args, _options, callback) => {
-    if (path.basename(file).toLowerCase() === "where.exe") {
-      callback(null, "", "");
-      return;
-    }
-    if (path.basename(file).toLowerCase() === "powershell.exe") {
-      callback(new Error("helper exited non-zero"), JSON.stringify({ ok: true }), "#< CLIXML");
-      return;
-    }
-    callback(null, "", "");
+  const calls = stubRestart(t, {
+    hasOrca: true,
+    orcaTerminals: [{ worktreeId: "wt-other", worktreePath: "D:\\elsewhere" }],
   });
-  t.mock.method(childProcess, "spawn", (command, args, options) => {
-    launches.push({ command, args, options });
-    return { on() { return this; }, unref() {} };
-  });
-  t.mock.method(process, "kill", () => { throw new Error("not running"); });
-  t.mock.method(global, "setTimeout", (callback) => { callback(); return 0; });
   t.mock.method(codexRollouts, "findCodexRolloutForProcess", async () => null);
 
   const result = await restartCliSessions(
-    [{
-      providerId: "codex",
-      pid: 601,
-      startTime: null,
-      cwd,
-      terminal: { pid: 61, name: "powershell.exe", isOrcaHosted: false },
-    }],
+    [
+      {
+        providerId: "codex",
+        pid: 501,
+        startTime: null,
+        cwd,
+        terminal: shell("powershell.exe", { isOrcaHosted: true }),
+      },
+    ],
     resumeCommandFor({ id: "codex" })
   );
 
-  assert.deepEqual(result, { restarted: 0, resumedInPlace: 1, manual: 0, failed: 0 });
-  assert.equal(launches.length, 0);
+  assert.deepEqual(result, { restarted: 1, closed: 1, manual: 0, failed: 0 });
+  assert.equal(calls.orcaCreates.length, 0); // never create in the wrong worktree
+  assert.equal(calls.launches.length, 1);
 });
 
-test("restartCliSessions injects a cwd-less Claude session before manual fallback", async (t) => {
-  const calls = [];
-  const launches = [];
-  t.mock.method(childProcess, "execFile", (file, args, _options, callback) => {
-    calls.push({ file, args });
-    if (path.basename(file).toLowerCase() === "where.exe") {
-      callback(null, "", "");
-      return;
-    }
-    if (path.basename(file).toLowerCase() === "powershell.exe") {
-      callback(null, JSON.stringify({ ok: true }), "");
-      return;
-    }
-    callback(null, "", "");
-  });
-  t.mock.method(childProcess, "spawn", (command, args, options) => {
-    launches.push({ command, args, options });
-    return { on() { return this; }, unref() {} };
-  });
-  t.mock.method(process, "kill", () => { throw new Error("not running"); });
-  t.mock.method(global, "setTimeout", (callback) => { callback(); return 0; });
+test("a claude session without a working directory needs a manual resume", async (t) => {
+  const calls = stubRestart(t);
   t.mock.method(claudeSessions, "findClaudeSessionForProcess", async () => null);
 
   const result = await restartCliSessions(
-    [{
-      providerId: "claude",
-      pid: 701,
-      startTime: null,
-      cwd: null,
-      terminal: { pid: 71, name: "powershell.exe", isOrcaHosted: false },
-    }],
+    [{ providerId: "claude", pid: 601, startTime: null, cwd: null, terminal: shell("powershell.exe") }],
     resumeCommandFor({ id: "claude" })
   );
 
-  assert.deepEqual(result, { restarted: 0, resumedInPlace: 1, manual: 0, failed: 0 });
-  const helper = calls.find(({ file }) => path.basename(file).toLowerCase() === "powershell.exe");
-  const injectionScript = Buffer.from(helper.args.at(-1), "base64").toString("utf16le");
-  const encodedText = injectionScript.match(
-    /Invoke-LazySwitchConsoleResume \(\[uint32\]71\) '([^']+)'/
-  )?.[1];
-  assert.equal(Buffer.from(encodedText, "base64").toString("utf16le"), "claude --continue\r");
-  assert.equal(launches.length, 0);
+  assert.deepEqual(result, { restarted: 0, closed: 1, manual: 1, failed: 0 });
+  assert.equal(calls.launches.length, 0);
 });
 
-test("restartCliSessions falls back safely when elevated restart cannot launch", async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
-  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
-  const launches = [];
-  const calls = [];
-  t.mock.method(childProcess, "execFile", (file, args, _options, callback) => {
-    calls.push({ file, args });
-    callback(null, "", "");
-  });
-  t.mock.method(childProcess, "spawn", (command, args, options) => {
-    launches.push({ command, args, options });
-    return { on() { return this; }, unref() {} };
-  });
-  t.mock.method(process, "kill", () => undefined);
-  t.mock.method(global, "setTimeout", (callback) => { callback(); return 0; });
+test("a codex session without a working directory reopens from the home directory", async (t) => {
+  const calls = stubRestart(t);
   t.mock.method(codexRollouts, "findCodexRolloutForProcess", async () => null);
 
   const result = await restartCliSessions(
-    [
-      {
-        providerId: "codex", pid: 501, startTime: null, cwd,
-        terminal: { pid: 51, name: "powershell.exe", isOrcaHosted: false },
-      },
-    ],
+    [{ providerId: "codex", pid: 501, startTime: null, cwd: null, terminal: shell("powershell.exe") }],
     resumeCommandFor({ id: "codex" })
   );
 
-  assert.deepEqual(result, { restarted: 1, resumedInPlace: 0, manual: 0, failed: 0 });
-  const uacLauncher = calls.find(({ file, args }) =>
-    path.basename(file).toLowerCase() === "powershell.exe" &&
-    Buffer.from(args.at(-1), "base64").toString("utf16le").includes("Start-Process")
-  );
-  assert.notEqual(uacLauncher, undefined);
-  assert.equal(launches.length, 1);
-});
-
-test("restartCliSessions resumes ACCESS_DENIED injection through one elevated batch", async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
-  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
-  const launches = [];
-  const calls = [];
-  let elevatedOuterCommandLength = 0;
-  t.mock.method(childProcess, "execFile", (file, args, _options, callback) => {
-    calls.push({ file, args });
-    if (path.basename(file).toLowerCase() === "where.exe") {
-      callback(null, "", "");
-      return;
-    }
-    if (path.basename(file).toLowerCase() === "powershell.exe") {
-      const script = Buffer.from(args.at(-1), "base64").toString("utf16le");
-      if (script.includes("Start-Process")) {
-        elevatedOuterCommandLength = [file, ...args].join(" ").length;
-        assert.doesNotMatch(script, /-EncodedCommand/);
-        const elevatedScriptFile = script.match(/-File', '([^']+)'/)?.[1];
-        assert.notEqual(elevatedScriptFile, undefined);
-        const elevatedScript = fs.readFileSync(elevatedScriptFile, "utf8");
-        assert.equal(elevatedScript.charCodeAt(0), 0xfeff);
-        const encodedPaths = [...elevatedScript.matchAll(/FromBase64String\('([^']+)'\)/g)];
-        const resultFile = Buffer.from(encodedPaths[1]?.[1], "base64").toString("utf16le");
-        fs.writeFileSync(resultFile, JSON.stringify({ results: [{ sessionKey: "801", ok: true }] }));
-        callback(null, JSON.stringify({ launched: true }), "");
-        return;
-      }
-      callback(null, JSON.stringify({ ok: false, nativeErrorCode: 5 }), "");
-      return;
-    }
-    callback(null, "", "");
-  });
-  t.mock.method(childProcess, "spawn", (command, args, options) => {
-    launches.push({ command, args, options });
-    return { on() { return this; }, unref() {} };
-  });
-  t.mock.method(process, "kill", () => { throw new Error("not running"); });
-  t.mock.method(global, "setTimeout", (callback) => { callback(); return 0; });
-  t.mock.method(codexRollouts, "findCodexRolloutForProcess", async () => null);
-
-  const result = await restartCliSessions(
-    [{
-      providerId: "codex",
-      pid: 801,
-      startTime: null,
-      cwd,
-      terminal: { pid: 81, name: "powershell.exe", isOrcaHosted: false },
-    }],
-    resumeCommandFor({ id: "codex" })
-  );
-
-  assert.ok(
-    elevatedOuterCommandLength < 32_000,
-    `elevated resume launcher must stay below the Windows command-line limit; got ${elevatedOuterCommandLength}`
-  );
-  assert.deepEqual(result, { restarted: 0, resumedInPlace: 1, manual: 0, failed: 0 });
-  assert.equal(
-    calls.filter(({ file, args }) =>
-      path.basename(file).toLowerCase() === "powershell.exe" &&
-      Buffer.from(args.at(-1), "base64").toString("utf16le").includes("Start-Process")
-    ).length,
-    1
-  );
-  assert.equal(launches.length, 0);
+  assert.deepEqual(result, { restarted: 1, closed: 1, manual: 0, failed: 0 });
+  assert.deepEqual(calls.launches[0].args, ["-d", os.homedir(), "codex", "resume"]);
 });

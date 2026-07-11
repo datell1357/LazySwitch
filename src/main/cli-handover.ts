@@ -64,13 +64,13 @@ export function createCliHandover(deps: CliHandoverDeps): CliHandover {
         ? deps.t("notif.cliRestartedManualBody", {
           provider: name,
           count: result.restarted,
-          resumedInPlace: result.resumedInPlace,
+          closed: result.closed,
           manual: result.manual,
         })
         : deps.t("notif.cliRestartedBody", {
           provider: name,
           count: result.restarted,
-          resumedInPlace: result.resumedInPlace,
+          closed: result.closed,
         })
     );
   }
