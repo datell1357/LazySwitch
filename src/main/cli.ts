@@ -76,6 +76,7 @@ async function liveRowFor(provider: Provider): Promise<UsageRow> {
         email: usage?.email ?? null,
         accountId: null,
         label: "live login",
+        enabled: true,
       },
       active: true,
       usage,
@@ -85,7 +86,13 @@ async function liveRowFor(provider: Provider): Promise<UsageRow> {
     const message = error instanceof Error ? error.message : String(error);
     return {
       provider: provider.displayName,
-      account: { name: "@live", email: null, accountId: null, label: "live login" },
+      account: {
+        name: "@live",
+        email: null,
+        accountId: null,
+        label: "live login",
+        enabled: true,
+      },
       active: true,
       usage: null,
       error: message,

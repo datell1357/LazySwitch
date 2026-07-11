@@ -22,6 +22,7 @@ export interface PAccount {
   email: string | null;
   accountId: string | null;
   label: string | null;
+  enabled: boolean;
 }
 
 export interface LoginFlowResult {
@@ -58,6 +59,7 @@ export interface Provider {
   importCurrent(name?: string): PAccount;
   removeAccount(name: string): void;
   renameAccount(oldName: string, newName: string): void;
+  setAccountEnabled(name: string, enabled: boolean): void;
 
   // -- switching -------------------------------------------------------
   /** Persist the live auth back into its owning slot (keep rotated tokens). */

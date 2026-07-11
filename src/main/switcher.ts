@@ -86,6 +86,7 @@ export function pickNextAccount(
   for (let i = 1; i <= list.length; i++) {
     const cand = list[(startIdx + i) % list.length];
     if (cand.name === activeName) continue;
+    if (cand.enabled === false) continue;
     if (coolingDown.has(cand.name)) continue;
     if (isExhausted(provider.cachedUsage?.(cand.name) ?? null, prefs)) continue;
     return cand;
@@ -112,6 +113,10 @@ export async function switchTo(
   opts?: { restartDesktop?: boolean }
 ): Promise<SwitchResult> {
   const from = provider.activeAccountName();
+  const target = provider.listAccounts().find((account) => account.name === name);
+  if (target?.enabled === false) {
+    throw new Error(`Account \"${name}\" is disabled`);
+  }
 
   if (from) provider.syncLiveBackToSlot();
   provider.installAuth(name);

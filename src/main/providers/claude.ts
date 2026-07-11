@@ -105,6 +105,7 @@ function listSlots(): PAccount[] {
         email,
         accountId: meta?.oauthAccount?.accountUuid ?? null,
         label: labelFor(meta, cred),
+        enabled: meta?.enabled !== false,
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -450,6 +451,7 @@ async function addViaLogin(onUrl?: (url: string) => void): Promise<LoginFlowResu
   writeJsonAtomic(
     slotMetaFile(slot),
     {
+      ...oldMeta,
       oauthAccount: {
         ...oldMeta?.oauthAccount,
         accountUuid: uuid ?? oldMeta?.oauthAccount?.accountUuid ?? null,
@@ -481,14 +483,16 @@ export const claudeProvider: Provider = {
     }
     const oauthAccount = liveOauthAccount();
     const slot = name?.trim() || deriveSlotName(oauthAccount?.emailAddress ?? null);
+    const oldMeta = readJson(slotMetaFile(slot)) ?? {};
     fs.mkdirSync(slotDir(slot), { recursive: true });
     writeJsonAtomic(slotCredFile(slot), cred, true);
-    writeJsonAtomic(slotMetaFile(slot), { oauthAccount }, false);
+    writeJsonAtomic(slotMetaFile(slot), { ...oldMeta, oauthAccount }, false);
     return {
       name: slot,
       email: oauthAccount?.emailAddress ?? null,
       accountId: oauthAccount?.accountUuid ?? null,
       label: labelFor({ oauthAccount }, cred),
+      enabled: oldMeta.enabled !== false,
     };
   },
 
@@ -500,6 +504,13 @@ export const claudeProvider: Provider = {
     if (!clean) throw new Error("Invalid account name");
     if (fs.existsSync(slotDir(clean))) throw new Error("Name already in use");
     fs.renameSync(slotDir(oldName), slotDir(clean));
+  },
+  setAccountEnabled: (name: string, enabled: boolean): void => {
+    if (!listSlots().some((account) => account.name === name)) {
+      throw new Error(`Account \"${name}\" is not enrolled`);
+    }
+    const meta = readJson(slotMetaFile(name)) ?? {};
+    writeJsonAtomic(slotMetaFile(name), { ...meta, enabled }, false);
   },
 
   syncLiveBackToSlot: (): void => {

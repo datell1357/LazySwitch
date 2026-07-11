@@ -89,12 +89,16 @@
         margin-top: 3px; font-size: 11px; color: var(--muted);
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       }
-      .plan-badge, .active-badge {
+      .plan-badge, .active-badge, .state-badge {
         flex-shrink: 0; border-radius: 999px; padding: 3px 8px;
         font-size: 10px; line-height: 1; font-weight: 800;
       }
       .plan-badge { background: #4c4a3e; color: #f2edd7; border: 1px solid #6a6653; }
       .active-badge { background: #d97757; color: #2a130b; border: 1px solid #f0a27c; }
+      .state-badge.is-enabled { background: #173f35; color: #b7ead8; border: 1px solid #2a8d70; }
+      .state-badge.is-disabled { background: #292b31; color: #a9adb6; border: 1px solid #535862; }
+      .account-toggle { margin-left: auto; padding: 5px 8px; font-size: 10px; }
+      .account-toggle.is-disabled { color: var(--accent-hi); border-color: #10a37f77; }
 
       .usage-stack { margin-top: 12px; display: grid; gap: 9px; }
       .usage-row-head {
@@ -270,6 +274,9 @@
           accountSummary: "{n} accounts · active {active}",
           noActive: "none",
           activeBadge: "Active",
+          activate: "Enable", deactivate: "Disable",
+          enabled: "Enabled", disabled: "Disabled",
+          turnOn: "Turn on", turnOff: "Turn off",
           usagePrimary: "Current session (5h)",
           usageMonthly: "Monthly limit",
           usageWeeklyAll: "Weekly · All models",
@@ -312,6 +319,9 @@
           accountSummary: "{n}계정 · 사용중 {active}",
           noActive: "없음",
           activeBadge: "사용중",
+          activate: "활성", deactivate: "비활성",
+          enabled: "활성화됨", disabled: "비활성화됨",
+          turnOn: "켜기", turnOff: "끄기",
           usagePrimary: "현재 세션 (5h)",
           usageMonthly: "월간 한도",
           usageWeeklyAll: "주간 · 모든 모델",
@@ -354,6 +364,9 @@
           accountSummary: "{n}アカウント · 使用中 {active}",
           noActive: "なし",
           activeBadge: "使用中",
+          activate: "有効", deactivate: "無効",
+          enabled: "有効", disabled: "無効",
+          turnOn: "オンにする", turnOff: "オフにする",
           usagePrimary: "現在のセッション (5h)",
           usageMonthly: "月間上限",
           usageWeeklyAll: "週間 · 全モデル",
@@ -396,6 +409,9 @@
           accountSummary: "{n}个账号 · 使用中 {active}",
           noActive: "无",
           activeBadge: "使用中",
+          activate: "启用", deactivate: "停用",
+          enabled: "已启用", disabled: "已停用",
+          turnOn: "开启", turnOff: "关闭",
           usagePrimary: "当前会话 (5h)",
           usageMonthly: "每月限额",
           usageWeeklyAll: "每周 · 所有模型",
@@ -535,6 +551,8 @@
         const displayName = a.name;
         const active = a.active ? `<span class="active-badge">${M.activeBadge}</span>` : "";
         const badge = plan ? `<span class="plan-badge">${esc(plan)}</span>` : "";
+        const state = `<span class="state-badge ${a.enabled ? "is-enabled" : "is-disabled"}">${a.enabled ? M.enabled : M.disabled}</span>`;
+        const toggle = `<button class="account-toggle ${a.enabled ? "" : "is-disabled"}" data-act="toggle-enabled" data-p="${esc(prov)}" data-n="${esc(a.name)}" data-enabled="${a.enabled}">${a.enabled ? M.turnOff : M.turnOn}</button>`;
         const sub = email && email !== a.name ? email : "";
         const emailLine = sub ? `<div class="acct-email">${esc(sub)}</div>` : "";
         return `<div class="acct-head">
@@ -542,6 +560,8 @@
             <div class="acct-name">${esc(displayName)}</div>
             ${active}
             ${badge}
+            ${state}
+            ${toggle}
           </div>
           ${emailLine}
         </div>`;
@@ -549,7 +569,7 @@
 
       function renderCard(prov, a) {
         const rows = usageRows(prov, a.usage) || `<div class="usage-none">${M.usageNone}</div>`;
-        const switchButton = a.active
+        const switchButton = a.active || !a.enabled
           ? ""
           : `<button class="switch-btn" data-act="switch" data-p="${esc(prov)}" data-n="${esc(a.name)}">${M.switchTo}</button>`;
         return `<div class="acct ${a.active ? "active" : ""}">
@@ -617,6 +637,18 @@
         const name = btn.dataset.n, act = btn.dataset.act, prov = btn.dataset.p;
         if (!act) return;
         if (act === "switch") { msg(M.switching); await window.rotator.switchTo(prov, name); msg(""); refresh(); }
+        else if (act === "toggle-enabled") {
+          btn.disabled = true;
+          try {
+            const result = await window.rotator.setEnabled(prov, name, btn.dataset.enabled !== "true");
+            if (result.ok) refresh();
+            else msg(M.loadFailed + result.error);
+          } catch (error) {
+            msg(M.loadFailed + error);
+          } finally {
+            if (btn.isConnected) btn.disabled = false;
+          }
+        }
         else if (act === "remove") { await window.rotator.remove(prov, name); refresh(); }
         else if (act === "rename") {
           const row = document.querySelector(`.rename-row[data-for="${CSS.escape(prov + ":" + name)}"]`);

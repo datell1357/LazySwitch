@@ -102,3 +102,35 @@ test("Claude usage keeps seven_day_omelette fallback for older responses", async
   assert.equal(usage.fable.usedPercent, 3);
   assert.equal(usage.fable.windowMinutes, 10080);
 });
+
+test("Claude import preserves a disabled account and rejects unknown account state changes", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "lazyswitch-claude-account-"));
+  const configDir = path.join(root, ".claude");
+  const accountsDir = path.join(root, ".claude-accounts");
+  const oldConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  const oldUserProfile = process.env.USERPROFILE;
+  delete require.cache[providerPath];
+  process.env.CLAUDE_CONFIG_DIR = configDir;
+  process.env.USERPROFILE = root;
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.mkdirSync(path.join(accountsDir, "qa"), { recursive: true });
+  fs.writeFileSync(
+    path.join(configDir, ".credentials.json"),
+    JSON.stringify({ claudeAiOauth: { accessToken: "token" } }),
+  );
+  fs.writeFileSync(path.join(accountsDir, "qa", "meta.json"), JSON.stringify({ enabled: false }));
+
+  try {
+    const { claudeProvider } = require(providerPath);
+    claudeProvider.importCurrent("qa");
+    assert.equal(claudeProvider.listAccounts()[0].enabled, false);
+    assert.throws(() => claudeProvider.setAccountEnabled("missing", false), /not enrolled/);
+  } finally {
+    delete require.cache[providerPath];
+    fs.rmSync(root, { recursive: true, force: true });
+    if (oldConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = oldConfigDir;
+    if (oldUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = oldUserProfile;
+  }
+});

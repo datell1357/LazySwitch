@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { pickNextAccount, isExhausted, exhaustedUntil } = require("../dist/main/switcher.js");
+const { pickNextAccount, isExhausted, exhaustedUntil, switchTo } = require("../dist/main/switcher.js");
 
 const PREFS = {
   autoApprove: false,
@@ -18,9 +18,15 @@ function windowAt(usedPercent, resetsAt) {
   return { usedPercent, windowMinutes: 300, resetsAt };
 }
 
-function providerWith(accounts, active, usageByName) {
+function providerWith(accounts, active, usageByName, disabledNames = []) {
   return {
-    listAccounts: () => accounts.map((name) => ({ name, email: null, accountId: null, label: null })),
+    listAccounts: () => accounts.map((name) => ({
+      name,
+      email: null,
+      accountId: null,
+      label: null,
+      enabled: !disabledNames.includes(name),
+    })),
     activeAccountName: () => active,
     cachedUsage: (name) => usageByName[name] ?? null,
   };
@@ -53,6 +59,27 @@ test("pickNextAccount treats a window past its reset time as usable again", () =
 test("pickNextAccount keeps accounts without cached usage eligible", () => {
   const provider = providerWith(["a", "b"], "a", {});
   assert.equal(pickNextAccount(provider, PREFS, NO_COOLDOWN)?.name, "b");
+});
+
+test("pickNextAccount skips disabled accounts while they remain tracked", () => {
+  const provider = providerWith(["a", "b", "c"], "a", {}, ["b"]);
+  assert.equal(pickNextAccount(provider, PREFS, NO_COOLDOWN)?.name, "c");
+});
+
+test("switchTo refuses a disabled account", async () => {
+  let installed = false;
+  const provider = {
+    listAccounts: () => [
+      { name: "a", email: null, accountId: null, label: null, enabled: true },
+      { name: "b", email: null, accountId: null, label: null, enabled: false },
+    ],
+    activeAccountName: () => "a",
+    syncLiveBackToSlot: () => {},
+    installAuth: () => { installed = true; },
+    desktop: null,
+  };
+  await assert.rejects(() => switchTo(provider, "b", PREFS, { restartDesktop: false }), /disabled/);
+  assert.equal(installed, false);
 });
 
 test("exhaustedUntil returns the latest blocking reset time", () => {

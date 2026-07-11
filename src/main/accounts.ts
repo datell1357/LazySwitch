@@ -28,6 +28,24 @@ export interface Account {
   /** Email/plan decoded from id_token if available. */
   label: string | null;
   lastRefresh: string | null;
+  enabled: boolean;
+}
+
+function accountStateFile(name: string): string {
+  return path.join(accountDir(name), ".lazyswitch.json");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function accountEnabled(name: string): boolean {
+  try {
+    const state: unknown = JSON.parse(fs.readFileSync(accountStateFile(name), "utf8"));
+    return !isRecord(state) || state["enabled"] !== false;
+  } catch {
+    return true;
+  }
 }
 
 export function readAuth(file: string): CodexAuth | null {
@@ -92,6 +110,7 @@ function toAccount(name: string, auth: CodexAuth | null): Account {
     authMode: auth?.auth_mode ?? null,
     label: labelFromAuth(auth),
     lastRefresh: auth?.last_refresh ?? null,
+    enabled: accountEnabled(name),
   };
 }
 
@@ -136,4 +155,11 @@ export function renameAccount(oldName: string, newName: string): void {
   if (!clean) throw new Error("Invalid account name");
   if (fs.existsSync(accountDir(clean))) throw new Error("Name already in use");
   fs.renameSync(accountDir(oldName), accountDir(clean));
+}
+
+export function setAccountEnabled(name: string, enabled: boolean): void {
+  if (!listAccounts().some((account) => account.name === name)) {
+    throw new Error(`Account \"${name}\" is not enrolled`);
+  }
+  fs.writeFileSync(accountStateFile(name), JSON.stringify({ enabled }), "utf8");
 }

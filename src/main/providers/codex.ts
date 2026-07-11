@@ -9,6 +9,7 @@ import {
   importCurrentAs,
   removeAccount,
   renameAccount,
+  setAccountEnabled,
   readAuth,
   emailFromAuth,
   deriveSlotName,
@@ -186,6 +187,7 @@ export const codexProvider: Provider = {
       email: a.email,
       accountId: a.accountId,
       label: a.label,
+      enabled: a.enabled,
     })),
   activeAccountName,
   hasLiveAuth: () => !!activeAccountId(),
@@ -193,10 +195,17 @@ export const codexProvider: Provider = {
     const slot =
       name?.trim() || deriveSlotName(emailFromAuth(readAuth(liveAuthFile())));
     const a = importCurrentAs(slot);
-    return { name: a.name, email: a.email, accountId: a.accountId, label: a.label };
+    return {
+      name: a.name,
+      email: a.email,
+      accountId: a.accountId,
+      label: a.label,
+      enabled: a.enabled,
+    };
   },
   removeAccount,
   renameAccount,
+  setAccountEnabled,
 
   syncLiveBackToSlot: (): void => {
     const activeName = activeAccountName();

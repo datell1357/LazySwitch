@@ -228,6 +228,7 @@ function buildMenu(): Menu {
     for (const a of accounts) {
       template.push({
         label: `  ${a.name === active ? "● " : "○ "}${accountDisplayName(a, a.name)}`,
+        enabled: a.enabled,
         click: () => void manualSwitch(p, a.name),
       });
     }
@@ -648,6 +649,21 @@ function registerIpc(): void {
   );
   ipcMain.handle("accounts:switch", async (_e, pid: string, name: string) => {
     await manualSwitch(providerById(pid), name);
+    broadcastChanged();
+    return { ok: true };
+  });
+  ipcMain.handle("accounts:setEnabled", (event, pid: string, name: string, enabled: boolean) => {
+    if (!managerWin || managerWin.isDestroyed() || event.sender !== managerWin.webContents) {
+      return { ok: false, error: "manager window required" };
+    }
+    if (typeof name !== "string" || typeof enabled !== "boolean") {
+      return { ok: false, error: "invalid account state" };
+    }
+    const provider = providerById(pid);
+    if (!provider.listAccounts().some((account) => account.name === name)) {
+      return { ok: false, error: "account is not enrolled" };
+    }
+    provider.setAccountEnabled(name, enabled);
     broadcastChanged();
     return { ok: true };
   });

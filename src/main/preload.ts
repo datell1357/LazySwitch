@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld("rotator", {
   list: (provider: string) => ipcRenderer.invoke("accounts:list", provider),
   switchTo: (provider: string, name: string) =>
     ipcRenderer.invoke("accounts:switch", provider, name),
+  setEnabled: (provider: string, name: string, enabled: boolean) =>
+    ipcRenderer.invoke("accounts:setEnabled", provider, name, enabled),
   remove: (provider: string, name: string) =>
     ipcRenderer.invoke("accounts:remove", provider, name),
   rename: (provider: string, oldName: string, newName: string) =>
