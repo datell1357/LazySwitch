@@ -42,9 +42,27 @@ Verified against a live Orca-hosted codex pane as well: the resumed `codex.exe`
 came back under the original pane's shell (`powershell.exe` ->
 `orca-terminal-daemon.exe`), with `resumedInPlace: 1` and no new window.
 
-For both elevated consoles the real `restartCliSessions` returned
-`{restarted: 1, resumedInPlace: 0}` and left the elevated shell untouched, which
-is the intended degrade.
+Elevated consoles are handled by escalating to a single UAC-elevated helper
+(`Start-Process -Verb RunAs`, one prompt per restart batch) that runs `taskkill`
+and the same console injection from a high-integrity context. Verified live in
+the exact real scenario: an elevated console blocked on a foreground elevated CLI
+stand-in, killed and resumed in place — `{restarted: 0, resumedInPlace: 1}`, the
+CLI dead, the elevated shell survived, the resume executed inside that shell (its
+own `$PID` in the marker), no new window. On this machine
+`ConsentPromptBehaviorAdmin = 0`, so the UAC step elevates silently; where it is
+set to prompt, the user approves once per batch.
+
+Two implementation hazards found and fixed during this work:
+- The elevated helper script must NOT be passed via nested `-EncodedCommand`
+  (launcher base64 wrapping the helper base64): a ~6 KB helper double-encodes to
+  ~42 KB and overflows the ~32 KB Windows command line, so every elevated resume
+  silently `ENAMETOOLONG`'d into the new-window fallback. Write the helper to a
+  temp `.ps1` and `RunAs -File` it; batch/result already travel as temp JSON.
+- An `ok` from the helper means the keystrokes reached the console input buffer,
+  not that they ran. If the target console is not at an interactive prompt
+  reading input, they queue until it is. This is why a console left mid-command
+  showed no visible resume; in the real flow the shell returns to its prompt the
+  instant the foreground CLI is killed, so the queued resume runs immediately.
 
 An `ok: true` from the helper means the keystrokes reached the console's input
 buffer, not that they ran: a shell busy inside a script never reads them. That is

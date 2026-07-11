@@ -1,11 +1,20 @@
 // @allow SIZE_OK - urgent process-control fix; split only with regression tests allowed.
 import { execFile, spawn } from "child_process";
-import { stat } from "fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 import { findClaudeSessionForProcess } from "./claude-sessions";
 import { findCodexRolloutForProcess } from "./codex-rollouts";
 import { PEB_CWD_SCRIPT } from "./cli-cwd-script";
+import {
+  decideConsoleResumeRoute,
+  recordCliRestartOutcome,
+} from "./cli-resume-routing";
+import type {
+  CliRestartCounters,
+  CliRestartOutcome,
+  ConsoleInjectionResult,
+} from "./cli-resume-routing";
 import type { Provider } from "./providers/types";
 
 export interface CliSession {
@@ -89,11 +98,8 @@ const POWERSHELL_RESUME_SCRIPT =
   "$cliArgs = @((ConvertFrom-Json $env:LAZYSWITCH_CLI_ARGS)); " +
   "& $env:LAZYSWITCH_CLI_COMMAND @cliArgs";
 
-function consoleInjectionScript(shellPid: number, text: string): string {
-  const encodedText = Buffer.from(`${text}\r`, "utf16le").toString("base64");
+function consoleInjectionSupportScript(): string {
   return `
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -153,57 +159,84 @@ public static class LazySwitchConsole {
 }
 '@
 
-try {
+function Get-LazySwitchNativeErrorCode([Exception]$Exception) {
+  $current = $Exception
+  while ($null -ne $current) {
+    if ($current -is [ComponentModel.Win32Exception]) {
+      return $current.NativeErrorCode
+    }
+    $current = $current.InnerException
+  }
+  return $null
+}
+
+function Invoke-LazySwitchConsoleResume([uint32]$ShellPid, [string]$EncodedText) {
   [void][LazySwitchConsole]::FreeConsole()
-  if (-not [LazySwitchConsole]::AttachConsole([uint32]${shellPid})) {
-    throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
-  }
-
-  $consoleInput = [LazySwitchConsole]::CreateFileW(
-    'CONIN$',
-    [uint32]3221225472,
-    [uint32]0x00000003,
-    [IntPtr]::Zero,
-    [uint32]3,
-    [uint32]0,
-    [IntPtr]::Zero
-  )
-  if ($consoleInput -eq [IntPtr]::Zero -or $consoleInput -eq [IntPtr](-1)) {
-    throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
-  }
-
   try {
-    if (-not [LazySwitchConsole]::FlushConsoleInputBuffer($consoleInput)) {
+    if (-not [LazySwitchConsole]::AttachConsole($ShellPid)) {
       throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
     }
-    $text = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedText}'))
-    $records = [LazySwitchConsole+INPUT_RECORD[]]::new($text.Length * 2)
-    $index = 0
-    foreach ($character in $text.ToCharArray()) {
-      foreach ($isDown in @($true, $false)) {
-        $key = [LazySwitchConsole+KEY_EVENT_RECORD]::new()
-        $key.bKeyDown = $isDown
-        $key.wRepeatCount = 1
-        $key.wVirtualKeyCode = if ($character -eq [char]13) { 13 } else { 0 }
-        $key.UnicodeChar = $character
-        $record = [LazySwitchConsole+INPUT_RECORD]::new()
-        $record.EventType = 1
-        $record.KeyEvent = $key
-        $records[$index] = $record
-        $index += 1
+    $consoleInput = [LazySwitchConsole]::CreateFileW(
+      'CONIN$',
+      [uint32]3221225472,
+      [uint32]0x00000003,
+      [IntPtr]::Zero,
+      [uint32]3,
+      [uint32]0,
+      [IntPtr]::Zero
+    )
+    if ($consoleInput -eq [IntPtr]::Zero -or $consoleInput -eq [IntPtr](-1)) {
+      throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
+    }
+
+    try {
+      if (-not [LazySwitchConsole]::FlushConsoleInputBuffer($consoleInput)) {
+        throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
       }
+      $text = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($EncodedText))
+      $records = [LazySwitchConsole+INPUT_RECORD[]]::new($text.Length * 2)
+      $index = 0
+      foreach ($character in $text.ToCharArray()) {
+        foreach ($isDown in @($true, $false)) {
+          $key = [LazySwitchConsole+KEY_EVENT_RECORD]::new()
+          $key.bKeyDown = $isDown
+          $key.wRepeatCount = 1
+          $key.wVirtualKeyCode = if ($character -eq [char]13) { 13 } else { 0 }
+          $key.UnicodeChar = $character
+          $record = [LazySwitchConsole+INPUT_RECORD]::new()
+          $record.EventType = 1
+          $record.KeyEvent = $key
+          $records[$index] = $record
+          $index += 1
+        }
+      }
+      [uint32]$written = 0
+      if (-not [LazySwitchConsole]::WriteConsoleInputW($consoleInput, $records, [uint32]$records.Length, [ref]$written) -or $written -ne $records.Length) {
+        throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
+      }
+    } finally {
+      [void][LazySwitchConsole]::CloseHandle($consoleInput)
     }
-    [uint32]$written = 0
-    if (-not [LazySwitchConsole]::WriteConsoleInputW($consoleInput, $records, [uint32]$records.Length, [ref]$written) -or $written -ne $records.Length) {
-      throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
-    }
+  } finally {
+    [void][LazySwitchConsole]::FreeConsole()
+  }
+}
+`;
+}
+
+function consoleInjectionScript(shellPid: number, text: string): string {
+  const encodedText = Buffer.from(`${text}\r`, "utf16le").toString("base64");
+  return `
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+${consoleInjectionSupportScript()}
+
+try {
+    Invoke-LazySwitchConsoleResume ([uint32]${shellPid}) '${encodedText}'
     [pscustomobject]@{ ok = $true } | ConvertTo-Json -Compress
     exit 0
-  } finally {
-    [void][LazySwitchConsole]::CloseHandle($consoleInput)
-  }
 } catch {
-  [pscustomobject]@{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress
+  [pscustomobject]@{ ok = $false; error = $_.Exception.Message; nativeErrorCode = (Get-LazySwitchNativeErrorCode $_.Exception) } | ConvertTo-Json -Compress
   exit 1
 }
 `;
@@ -557,7 +590,10 @@ async function sendOrcaResume(handle: string, text: string): Promise<boolean> {
   }
 }
 
-async function injectConsoleResume(shellPid: number, text: string): Promise<boolean> {
+async function injectConsoleResume(
+  shellPid: number,
+  text: string
+): Promise<ConsoleInjectionResult> {
   try {
     const stdout = await execFileStdoutRegardlessOfExit(
       POWERSHELL_EXE,
@@ -571,9 +607,140 @@ async function injectConsoleResume(shellPid: number, text: string): Promise<bool
       15_000
     );
     const result: unknown = JSON.parse(stdout.trim());
-    return isRecord(result) && result.ok === true;
+    if (isRecord(result) && result.ok === true) return "ok";
+    return isRecord(result) && result.nativeErrorCode === 5 ? "access-denied" : "failed";
   } catch {
-    return false;
+    return "failed";
+  }
+}
+
+interface ElevatedConsoleResumeRequest {
+  readonly sessionKey: string;
+  readonly cliPid: number;
+  readonly shellPid: number;
+  readonly shellName: string;
+  readonly resumeText: string;
+}
+
+function encodeUtf16(value: string): string {
+  return Buffer.from(value, "utf16le").toString("base64");
+}
+
+function elevatedConsoleResumeScript(batchFile: string, resultFile: string): string {
+  const encodedBatchFile = encodeUtf16(batchFile);
+  const encodedResultFile = encodeUtf16(resultFile);
+  return `
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+${consoleInjectionSupportScript()}
+
+$batchFile = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedBatchFile}'))
+$resultFile = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedResultFile}'))
+$results = [System.Collections.Generic.List[object]]::new()
+$batch = @(Get-Content -LiteralPath $batchFile -Raw | ConvertFrom-Json)
+
+foreach ($item in $batch) {
+  $ok = $false
+  try {
+    & (Join-Path $env:SystemRoot 'System32\\taskkill.exe') /PID ([string]$item.cliPid) /T /F | Out-Null
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    while ($null -ne (Get-Process -Id ([int]$item.cliPid) -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) {
+      Start-Sleep -Milliseconds 100
+    }
+    if ($null -ne (Get-Process -Id ([int]$item.cliPid) -ErrorAction SilentlyContinue)) {
+      throw 'The CLI process did not exit after elevated taskkill.'
+    }
+    $resumeText = [string]$item.resumeText + [char]13
+    $encodedText = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($resumeText))
+    Invoke-LazySwitchConsoleResume ([uint32]$item.shellPid) $encodedText
+    $ok = $true
+  } catch {
+    $ok = $false
+  } finally {
+    [void][LazySwitchConsole]::FreeConsole()
+  }
+  [void]$results.Add([pscustomobject]@{ sessionKey = [string]$item.sessionKey; ok = $ok })
+}
+
+$output = [pscustomobject]@{ results = @($results.ToArray()) } | ConvertTo-Json -Compress -Depth 3
+[IO.File]::WriteAllText($resultFile, $output, [Text.UTF8Encoding]::new($false))
+Write-Output $output
+`;
+}
+
+function elevatedConsoleLauncherScript(elevatedScriptFile: string): string {
+  const escapedElevatedScriptFile = elevatedScriptFile.replace(/'/g, "''");
+  return `
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+try {
+  Start-Process -FilePath '${POWERSHELL_EXE.replace(/'/g, "''")}' -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '${escapedElevatedScriptFile}' -Verb RunAs -Wait -PassThru -WindowStyle Hidden | Out-Null
+  [pscustomobject]@{ launched = $true } | ConvertTo-Json -Compress
+} catch {
+  [pscustomobject]@{ launched = $false } | ConvertTo-Json -Compress
+}
+`;
+}
+
+function readElevatedResumeSuccesses(
+  value: unknown,
+  expectedSessionKeys: ReadonlySet<string>
+): ReadonlySet<string> {
+  if (!isRecord(value) || !Array.isArray(value.results)) return new Set();
+  const successes = new Set<string>();
+  for (const result of value.results) {
+    if (
+      isRecord(result) &&
+      typeof result.sessionKey === "string" &&
+      result.ok === true &&
+      expectedSessionKeys.has(result.sessionKey)
+    ) {
+      successes.add(result.sessionKey);
+    }
+  }
+  return successes;
+}
+
+async function runElevatedConsoleResumeBatch(
+  batch: readonly ElevatedConsoleResumeRequest[]
+): Promise<ReadonlySet<string>> {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "lazyswitch-cli-resume-"));
+  const batchFile = path.join(tempDirectory, "batch.json");
+  const resultFile = path.join(tempDirectory, "result.json");
+  const elevatedScriptFile = path.join(tempDirectory, "elevated-resume.ps1");
+  try {
+    await Promise.all([
+      writeFile(batchFile, JSON.stringify(batch), "utf8"),
+      writeFile(
+        elevatedScriptFile,
+        `\uFEFF${elevatedConsoleResumeScript(batchFile, resultFile)}`,
+        "utf8"
+      ),
+    ]);
+    const launcherOutput = await execFileStdoutRegardlessOfExit(
+      POWERSHELL_EXE,
+      [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-EncodedCommand",
+        encodePowerShell(elevatedConsoleLauncherScript(elevatedScriptFile)),
+      ],
+      0
+    );
+    const launcherResult: unknown = JSON.parse(launcherOutput.trim());
+    if (!isRecord(launcherResult) || launcherResult.launched !== true) return new Set();
+    // RunAs uses ShellExecute, which cannot redirect stdout. The elevated helper
+    // mirrors its stdout JSON into this result file for the unelevated caller.
+    const helperResult: unknown = JSON.parse(await readFile(resultFile, "utf8"));
+    return readElevatedResumeSuccesses(
+      helperResult,
+      new Set(batch.map((request) => request.sessionKey))
+    );
+  } catch {
+    return new Set();
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
   }
 }
 
@@ -653,6 +820,33 @@ async function existingRawCwd(value: string): Promise<string | null> {
   }
 }
 
+interface ResumeFallback {
+  readonly providerId: Provider["id"];
+  readonly cwd: string | null;
+  readonly resume: CliResumeCommand;
+}
+
+interface DeferredElevatedResume {
+  readonly elevated: ElevatedConsoleResumeRequest;
+  readonly fallback: ResumeFallback;
+}
+
+function resumeFallbackOutcome(fallback: ResumeFallback, hasWt: boolean): CliRestartOutcome {
+  let cwd = fallback.cwd;
+  if (cwd === null) {
+    if (fallback.providerId === "codex") {
+      cwd = os.homedir(); // the resume picker works from anywhere
+    } else {
+      // `claude --continue` only finds sessions of its working directory.
+      return "manual";
+    }
+  }
+  const launched = hasWt
+    ? launchWithWindowsTerminal(cwd, fallback.resume)
+    : launchWithPowerShell(cwd, fallback.resume);
+  return launched ? "restarted" : "failed";
+}
+
 export async function restartCliSessions(
   sessions: readonly CliSession[],
   resume: CliResumeCommand
@@ -661,10 +855,13 @@ export async function restartCliSessions(
   let orcaHandles: Map<number, string> | null = null;
   const claimedCodexSessionIds = new Set<string>();
   const claimedClaudeSessionIds = new Set<string>();
-  let restarted = 0;
-  let resumedInPlace = 0;
-  let manual = 0;
-  let failed = 0;
+  let counters: CliRestartCounters = {
+    restarted: 0,
+    resumedInPlace: 0,
+    manual: 0,
+    failed: 0,
+  };
+  const deferredElevatedResumes: DeferredElevatedResume[] = [];
 
   for (const session of sessions) {
     let sessionResume = resume;
@@ -702,15 +899,22 @@ export async function restartCliSessions(
     // app, but a fresh window with the resume command still gets the user
     // back to the conversation; the old window just stays open.
     const stopped = await terminateProcess(session.pid);
-    if (!stopped) failed += 1;
+    const fallback: ResumeFallback = {
+      providerId: session.providerId,
+      cwd,
+      resume: sessionResume,
+    };
 
-    if (stopped && session.terminal) {
+    if (session.terminal) {
       const inPlaceCommand =
         cwd === null
           ? sessionResume.text
           : formatResumeCommandForShell(cwd, sessionResume, session.terminal.name);
-      let resumed = await injectConsoleResume(session.terminal.pid, inPlaceCommand);
-      if (!resumed && session.terminal.isOrcaHosted && session.cwd !== null) {
+      const injection = stopped
+        ? await injectConsoleResume(session.terminal.pid, inPlaceCommand)
+        : null;
+      let resumed = injection === "ok";
+      if (stopped && !resumed && session.terminal.isOrcaHosted && session.cwd !== null) {
         if (orcaHandles === null) {
           const terminals = (await commandExists("orca")) ? await listOrcaTerminals() : [];
           orcaHandles = pairOrcaTerminalHandles(sessions, terminals);
@@ -719,30 +923,49 @@ export async function restartCliSessions(
         resumed = orcaHandle !== undefined && (await sendOrcaResume(orcaHandle, inPlaceCommand));
       }
       if (resumed) {
-        resumedInPlace += 1;
+        counters = recordCliRestartOutcome(counters, "resumed-in-place");
+        continue;
+      }
+      if (
+        decideConsoleResumeRoute({
+          stopped,
+          hasTerminal: true,
+          injection,
+        }) === "elevate"
+      ) {
+        deferredElevatedResumes.push({
+          elevated: {
+            sessionKey: String(session.pid),
+            cliPid: session.pid,
+            shellPid: session.terminal.pid,
+            shellName: session.terminal.name,
+            resumeText: inPlaceCommand,
+          },
+          fallback,
+        });
         continue;
       }
     }
 
-    if (cwd === null) {
-      if (session.providerId === "codex") {
-        cwd = os.homedir(); // the resume picker works from anywhere
-      } else {
-        // `claude --continue` only finds sessions of its working directory.
-        manual += 1;
-        continue;
-      }
-    }
+    counters = recordCliRestartOutcome(counters, resumeFallbackOutcome(fallback, hasWt));
+  }
 
-    const launched = hasWt
-      ? launchWithWindowsTerminal(cwd, sessionResume)
-      : launchWithPowerShell(cwd, sessionResume);
-    if (launched) restarted += 1;
-    else {
-      failed += 1;
-      manual += 1;
+  const elevatedSuccesses =
+    deferredElevatedResumes.length === 0
+      ? new Set<string>()
+      : await runElevatedConsoleResumeBatch(
+          deferredElevatedResumes.map((deferred) => deferred.elevated)
+        );
+  for (const deferred of deferredElevatedResumes) {
+    if (elevatedSuccesses.has(deferred.elevated.sessionKey)) {
+      counters = recordCliRestartOutcome(counters, "resumed-in-place");
+    } else {
+      counters = recordCliRestartOutcome(
+        counters,
+        resumeFallbackOutcome(deferred.fallback, hasWt)
+      );
     }
   }
 
-  return { restarted, resumedInPlace, manual, failed };
+  return counters;
 }

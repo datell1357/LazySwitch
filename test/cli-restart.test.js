@@ -8,11 +8,59 @@ const test = require("node:test");
 const claudeSessions = require("../dist/main/claude-sessions.js");
 const codexRollouts = require("../dist/main/codex-rollouts.js");
 const {
+  decideConsoleResumeRoute,
+  recordCliRestartOutcome,
+} = require("../dist/main/cli-resume-routing.js");
+const {
   formatResumeCommandForShell,
   pairOrcaTerminalHandles,
   restartCliSessions,
   resumeCommandFor,
 } = require("../dist/main/cli-sessions.js");
+
+test("console resume routing defers a console session when unelevated termination leaves it alive", () => {
+  const route = decideConsoleResumeRoute({
+    stopped: false,
+    hasTerminal: true,
+    injection: null,
+  });
+
+  assert.equal(route, "elevate");
+});
+
+test("console resume routing defers an ACCESS_DENIED injection but not another injection failure", () => {
+  const deniedRoute = decideConsoleResumeRoute({
+    stopped: true,
+    hasTerminal: true,
+    injection: "access-denied",
+  });
+  const failedRoute = decideConsoleResumeRoute({
+    stopped: true,
+    hasTerminal: true,
+    injection: "failed",
+  });
+
+  assert.equal(deniedRoute, "elevate");
+  assert.equal(failedRoute, "fallback");
+});
+
+test("restart accounting records an elevated in-place resume without double counting", () => {
+  const result = recordCliRestartOutcome(
+    { restarted: 0, resumedInPlace: 0, manual: 0, failed: 0 },
+    "resumed-in-place"
+  );
+
+  assert.deepEqual(result, { restarted: 0, resumedInPlace: 1, manual: 0, failed: 0 });
+});
+
+test("restart accounting keeps UAC cancellation fallback recoverable", () => {
+  const result = recordCliRestartOutcome(
+    { restarted: 0, resumedInPlace: 0, manual: 0, failed: 0 },
+    "restarted"
+  );
+
+  assert.deepEqual(result, { restarted: 1, resumedInPlace: 0, manual: 0, failed: 0 });
+});
 
 function mockRestartRuntime(t, hasWt = true) {
   const launches = [];
@@ -323,6 +371,7 @@ test("restartCliSessions tries console injection before an unambiguous Orca fall
   assert.match(injectionScript, /\$ProgressPreference = 'SilentlyContinue'/);
   assert.match(injectionScript, /exit 0/);
   assert.match(injectionScript, /exit 1/);
+  assert.match(injectionScript, /nativeErrorCode/);
   assert.match(injectionScript, /\[uint32\]3221225472/);
   assert.doesNotMatch(injectionScript, /\[uint32\]0xC0000000/);
   assert.deepEqual(launches.map(({ command, args }) => ({ command, args })), [
@@ -378,6 +427,13 @@ test("restartCliSessions never sends through Orca when its worktree has multiple
   assert.equal(
     calls.some(({ file }) => path.basename(file).toLowerCase() === "powershell.exe"),
     true
+  );
+  assert.equal(
+    calls.some(({ file, args }) =>
+      path.basename(file).toLowerCase() === "powershell.exe" &&
+      Buffer.from(args.at(-1), "base64").toString("utf16le").includes("Start-Process")
+    ),
+    false
   );
   assert.equal(launches.length, 1);
 });
@@ -457,12 +513,14 @@ test("restartCliSessions injects a cwd-less Claude session before manual fallbac
   assert.deepEqual(result, { restarted: 0, resumedInPlace: 1, manual: 0, failed: 0 });
   const helper = calls.find(({ file }) => path.basename(file).toLowerCase() === "powershell.exe");
   const injectionScript = Buffer.from(helper.args.at(-1), "base64").toString("utf16le");
-  const encodedText = injectionScript.match(/FromBase64String\('([^']+)'\)/)?.[1];
+  const encodedText = injectionScript.match(
+    /Invoke-LazySwitchConsoleResume \(\[uint32\]71\) '([^']+)'/
+  )?.[1];
   assert.equal(Buffer.from(encodedText, "base64").toString("utf16le"), "claude --continue\r");
   assert.equal(launches.length, 0);
 });
 
-test("restartCliSessions opens a new window without injecting when termination fails", async (t) => {
+test("restartCliSessions falls back safely when elevated restart cannot launch", async (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const launches = [];
@@ -489,7 +547,77 @@ test("restartCliSessions opens a new window without injecting when termination f
     resumeCommandFor({ id: "codex" })
   );
 
-  assert.deepEqual(result, { restarted: 1, resumedInPlace: 0, manual: 0, failed: 1 });
-  assert.equal(calls.some(({ file }) => path.basename(file).toLowerCase() === "powershell.exe"), false);
+  assert.deepEqual(result, { restarted: 1, resumedInPlace: 0, manual: 0, failed: 0 });
+  const uacLauncher = calls.find(({ file, args }) =>
+    path.basename(file).toLowerCase() === "powershell.exe" &&
+    Buffer.from(args.at(-1), "base64").toString("utf16le").includes("Start-Process")
+  );
+  assert.notEqual(uacLauncher, undefined);
   assert.equal(launches.length, 1);
+});
+
+test("restartCliSessions resumes ACCESS_DENIED injection through one elevated batch", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const launches = [];
+  const calls = [];
+  let elevatedOuterCommandLength = 0;
+  t.mock.method(childProcess, "execFile", (file, args, _options, callback) => {
+    calls.push({ file, args });
+    if (path.basename(file).toLowerCase() === "where.exe") {
+      callback(null, "", "");
+      return;
+    }
+    if (path.basename(file).toLowerCase() === "powershell.exe") {
+      const script = Buffer.from(args.at(-1), "base64").toString("utf16le");
+      if (script.includes("Start-Process")) {
+        elevatedOuterCommandLength = [file, ...args].join(" ").length;
+        assert.doesNotMatch(script, /-EncodedCommand/);
+        const elevatedScriptFile = script.match(/-File', '([^']+)'/)?.[1];
+        assert.notEqual(elevatedScriptFile, undefined);
+        const elevatedScript = fs.readFileSync(elevatedScriptFile, "utf8");
+        assert.equal(elevatedScript.charCodeAt(0), 0xfeff);
+        const encodedPaths = [...elevatedScript.matchAll(/FromBase64String\('([^']+)'\)/g)];
+        const resultFile = Buffer.from(encodedPaths[1]?.[1], "base64").toString("utf16le");
+        fs.writeFileSync(resultFile, JSON.stringify({ results: [{ sessionKey: "801", ok: true }] }));
+        callback(null, JSON.stringify({ launched: true }), "");
+        return;
+      }
+      callback(null, JSON.stringify({ ok: false, nativeErrorCode: 5 }), "");
+      return;
+    }
+    callback(null, "", "");
+  });
+  t.mock.method(childProcess, "spawn", (command, args, options) => {
+    launches.push({ command, args, options });
+    return { on() { return this; }, unref() {} };
+  });
+  t.mock.method(process, "kill", () => { throw new Error("not running"); });
+  t.mock.method(global, "setTimeout", (callback) => { callback(); return 0; });
+  t.mock.method(codexRollouts, "findCodexRolloutForProcess", async () => null);
+
+  const result = await restartCliSessions(
+    [{
+      providerId: "codex",
+      pid: 801,
+      startTime: null,
+      cwd,
+      terminal: { pid: 81, name: "powershell.exe", isOrcaHosted: false },
+    }],
+    resumeCommandFor({ id: "codex" })
+  );
+
+  assert.ok(
+    elevatedOuterCommandLength < 32_000,
+    `elevated resume launcher must stay below the Windows command-line limit; got ${elevatedOuterCommandLength}`
+  );
+  assert.deepEqual(result, { restarted: 0, resumedInPlace: 1, manual: 0, failed: 0 });
+  assert.equal(
+    calls.filter(({ file, args }) =>
+      path.basename(file).toLowerCase() === "powershell.exe" &&
+      Buffer.from(args.at(-1), "base64").toString("utf16le").includes("Start-Process")
+    ).length,
+    1
+  );
+  assert.equal(launches.length, 0);
 });
