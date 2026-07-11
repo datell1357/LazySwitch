@@ -695,8 +695,8 @@ function registerIpc(): void {
   ipcMain.handle("cli:testRestart", async (_e, pid: string) => {
     const p = providerById(pid);
     const sessions = await cliHandover.detect(p);
-    if (sessions.length > 0) await cliHandover.schedule(p, sessions);
-    return { ok: true, sessions: sessions.length };
+    const result = sessions.length > 0 ? await cliHandover.schedule(p, sessions) : null;
+    return { ok: true, sessions: sessions.length, result };
   });
   ipcMain.handle("lang:get", () => resolveLang(cfg.language));
   ipcMain.handle("open:url", (_e, url: string) => shell.openExternal(url));

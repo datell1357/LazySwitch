@@ -28,7 +28,7 @@ test("schedule uses a pre-captured CLI session snapshot", async () => {
   };
   cliSessions.restartCliSessions = async (sessions) => {
     restartedSessions = sessions;
-    return { restarted: sessions.length, manual: 0, failed: 0 };
+    return { restarted: sessions.length, resumedInPlace: 0, manual: 0, failed: 0 };
   };
 
   const provider = { id: "codex", displayName: "Codex" };
@@ -47,8 +47,9 @@ test("schedule uses a pre-captured CLI session snapshot", async () => {
     t: (key) => key,
   });
 
-  await handover.schedule(provider, sessions);
+  const result = await handover.schedule(provider, sessions);
 
   assert.equal(detectCalls, 0);
   assert.deepEqual(restartedSessions, sessions);
+  assert.deepEqual(result, { restarted: 1, resumedInPlace: 0, manual: 0, failed: 0 });
 });

@@ -29,7 +29,7 @@ export interface CliHandover {
   readonly schedule: (
     provider: Provider,
     sessions: readonly CliSession[]
-  ) => Promise<void>;
+  ) => Promise<CliRestartResult | null>;
 }
 
 function rendererPath(file: string): string {
@@ -62,14 +62,16 @@ export function createCliHandover(deps: CliHandoverDeps): CliHandover {
       `${provider.displayName} — ${deps.t("notif.cliRestartedTitle")}`,
       result.manual > 0
         ? deps.t("notif.cliRestartedManualBody", {
-            provider: name,
-            count: result.restarted,
-            manual: result.manual,
-          })
+          provider: name,
+          count: result.restarted,
+          resumedInPlace: result.resumedInPlace,
+          manual: result.manual,
+        })
         : deps.t("notif.cliRestartedBody", {
-            provider: name,
-            count: result.restarted,
-          })
+          provider: name,
+          count: result.restarted,
+          resumedInPlace: result.resumedInPlace,
+        })
     );
   }
 
@@ -124,14 +126,14 @@ export function createCliHandover(deps: CliHandoverDeps): CliHandover {
   async function handle(
     provider: Provider,
     sessions: readonly CliSession[]
-  ): Promise<void> {
-    if (sessions.length === 0) return;
+  ): Promise<CliRestartResult | null> {
+    if (sessions.length === 0) return null;
     const resume = resumeCommandFor(provider);
     if (deps.getPrefs(provider).autoRestartCli) {
       const result = await restartCliSessions(sessions, resume);
       if (result.manual > 0) clipboard.writeText(resume.text);
       notifyCliRestart(provider, result);
-      return;
+      return result;
     }
 
     const action = await askRestart(provider, sessions);
@@ -144,13 +146,14 @@ export function createCliHandover(deps: CliHandoverDeps): CliHandover {
           command: resume.text,
         })
       );
-      return;
+      return null;
     }
-    if (action !== "restart") return;
+    if (action !== "restart") return null;
 
     const result = await restartCliSessions(sessions, resume);
     if (result.manual > 0) clipboard.writeText(resume.text);
     notifyCliRestart(provider, result);
+    return result;
   }
 
   ipcMain.handle(
@@ -163,9 +166,10 @@ export function createCliHandover(deps: CliHandoverDeps): CliHandover {
     detect: (provider: Provider) => detectCliSessions(provider),
     schedule: async (provider: Provider, sessions: readonly CliSession[]) => {
       try {
-        await handle(provider, sessions);
+        return await handle(provider, sessions);
       } catch (error) {
         console.warn(`[cli:${provider.id}] handover failed`, formatError(error));
+        return null;
       }
     },
   };

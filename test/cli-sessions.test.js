@@ -90,3 +90,38 @@ test("detected cwd loses its trailing backslash but keeps drive roots", () => {
   assert.equal(sessions[0].cwd, "D:\\Vibe Project\\My Project\\codex-account-rotator");
   assert.equal(sessions[1].cwd, "D:\\");
 });
+
+test("detector resolves the nearest shell and records Orca hosting", () => {
+  const sessions = readDetectorOutput(
+    detectorValue(
+      [
+        {
+          pid: 100,
+          parentPid: 80,
+          name: "codex.exe",
+          executablePath: "C:\\tools\\codex.exe",
+          startTime: null,
+          cwd: "D:\\work",
+        },
+      ],
+      [
+        { pid: 80, parentPid: 60, name: "node.exe", executablePath: null },
+        { pid: 60, parentPid: 40, name: "pwsh.exe", executablePath: null },
+        {
+          pid: 40,
+          parentPid: 1,
+          name: "orca-terminal-daemon.exe",
+          executablePath: null,
+        },
+      ]
+    ),
+    "codex",
+    ROOT_PID
+  );
+
+  assert.deepEqual(sessions[0].terminal, {
+    pid: 60,
+    name: "pwsh.exe",
+    isOrcaHosted: true,
+  });
+});

@@ -13,6 +13,13 @@ export interface CliSession {
   readonly pid: number;
   readonly startTime: string | null;
   readonly cwd: string | null;
+  readonly terminal: CliTerminal | null;
+}
+
+export interface CliTerminal {
+  readonly pid: number;
+  readonly name: string;
+  readonly isOrcaHosted: boolean;
 }
 
 export interface CliResumeCommand {
@@ -23,8 +30,14 @@ export interface CliResumeCommand {
 
 export interface CliRestartResult {
   readonly restarted: number;
+  readonly resumedInPlace: number;
   readonly manual: number;
   readonly failed: number;
+}
+
+interface OrcaTerminal {
+  readonly handle: string;
+  readonly worktreePath: string;
 }
 
 interface DetectorProcessRow {
@@ -76,6 +89,126 @@ const POWERSHELL_RESUME_SCRIPT =
   "$cliArgs = @((ConvertFrom-Json $env:LAZYSWITCH_CLI_ARGS)); " +
   "& $env:LAZYSWITCH_CLI_COMMAND @cliArgs";
 
+function consoleInjectionScript(shellPid: number, text: string): string {
+  const encodedText = Buffer.from(`${text}\r`, "utf16le").toString("base64");
+  return `
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class LazySwitchConsole {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  public struct KEY_EVENT_RECORD {
+    [MarshalAs(UnmanagedType.Bool)] public bool bKeyDown;
+    public ushort wRepeatCount;
+    public ushort wVirtualKeyCode;
+    public ushort wVirtualScanCode;
+    public char UnicodeChar;
+    public uint dwControlKeyState;
+  }
+
+  [StructLayout(LayoutKind.Explicit, CharSet = CharSet.Unicode)]
+  public struct INPUT_RECORD {
+    [FieldOffset(0)] public ushort EventType;
+    [FieldOffset(4)] public KEY_EVENT_RECORD KeyEvent;
+  }
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  public static extern bool FreeConsole();
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  public static extern bool AttachConsole(uint dwProcessId);
+
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  public static extern IntPtr CreateFileW(
+    string lpFileName,
+    uint dwDesiredAccess,
+    uint dwShareMode,
+    IntPtr lpSecurityAttributes,
+    uint dwCreationDisposition,
+    uint dwFlagsAndAttributes,
+    IntPtr hTemplateFile
+  );
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  public static extern bool FlushConsoleInputBuffer(IntPtr hConsoleInput);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  public static extern bool WriteConsoleInputW(
+    IntPtr hConsoleInput,
+    [In] INPUT_RECORD[] lpBuffer,
+    uint nLength,
+    out uint lpNumberOfEventsWritten
+  );
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  public static extern bool CloseHandle(IntPtr hObject);
+}
+'@
+
+try {
+  [void][LazySwitchConsole]::FreeConsole()
+  if (-not [LazySwitchConsole]::AttachConsole([uint32]${shellPid})) {
+    throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
+  }
+
+  $consoleInput = [LazySwitchConsole]::CreateFileW(
+    'CONIN$',
+    [uint32]3221225472,
+    [uint32]0x00000003,
+    [IntPtr]::Zero,
+    [uint32]3,
+    [uint32]0,
+    [IntPtr]::Zero
+  )
+  if ($consoleInput -eq [IntPtr]::Zero -or $consoleInput -eq [IntPtr](-1)) {
+    throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
+  }
+
+  try {
+    if (-not [LazySwitchConsole]::FlushConsoleInputBuffer($consoleInput)) {
+      throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
+    }
+    $text = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedText}'))
+    $records = [LazySwitchConsole+INPUT_RECORD[]]::new($text.Length * 2)
+    $index = 0
+    foreach ($character in $text.ToCharArray()) {
+      foreach ($isDown in @($true, $false)) {
+        $key = [LazySwitchConsole+KEY_EVENT_RECORD]::new()
+        $key.bKeyDown = $isDown
+        $key.wRepeatCount = 1
+        $key.wVirtualKeyCode = if ($character -eq [char]13) { 13 } else { 0 }
+        $key.UnicodeChar = $character
+        $record = [LazySwitchConsole+INPUT_RECORD]::new()
+        $record.EventType = 1
+        $record.KeyEvent = $key
+        $records[$index] = $record
+        $index += 1
+      }
+    }
+    [uint32]$written = 0
+    if (-not [LazySwitchConsole]::WriteConsoleInputW($consoleInput, $records, [uint32]$records.Length, [ref]$written) -or $written -ne $records.Length) {
+      throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
+    }
+    [pscustomobject]@{ ok = $true } | ConvertTo-Json -Compress
+    exit 0
+  } finally {
+    [void][LazySwitchConsole]::CloseHandle($consoleInput)
+  }
+} catch {
+  [pscustomobject]@{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress
+  exit 1
+}
+`;
+}
+
 function encodePowerShell(script: string): string {
   return Buffer.from(script, "utf16le").toString("base64");
 }
@@ -97,6 +230,21 @@ function execFileText(
         }
         resolve(String(stdout));
       }
+    );
+  });
+}
+
+function execFileStdoutRegardlessOfExit(
+  file: string,
+  args: readonly string[],
+  timeoutMs: number
+): Promise<string> {
+  return new Promise((resolve) => {
+    execFile(
+      file,
+      [...args],
+      { timeout: timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024 },
+      (_error, stdout) => resolve(String(stdout))
     );
   });
 }
@@ -142,12 +290,17 @@ function readDetectorProcess(value: unknown): DetectorProcessRow | null {
   };
 }
 
-function readSession(row: DetectorProcessRow, providerId: Provider["id"]): CliSession {
+function readSession(
+  row: DetectorProcessRow,
+  providerId: Provider["id"],
+  rows: ReadonlyMap<number, DetectorProcessRow>
+): CliSession {
   return {
     providerId,
     pid: row.pid,
     startTime: row.startTime,
     cwd: row.cwd,
+    terminal: terminalAncestor(row.pid, rows),
   };
 }
 
@@ -160,6 +313,53 @@ function readDetectorRows(value: unknown): readonly DetectorProcessRow[] {
 
 function normalizeWindowsPath(value: string): string {
   return value.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+}
+
+export function pairOrcaTerminalHandles(
+  sessions: readonly CliSession[],
+  terminals: readonly OrcaTerminal[]
+): Map<number, string> {
+  const handlesByWorktree = new Map<string, readonly string[]>();
+  for (const terminal of terminals) {
+    const worktree = normalizeWindowsPath(terminal.worktreePath);
+    handlesByWorktree.set(worktree, [...(handlesByWorktree.get(worktree) ?? []), terminal.handle]);
+  }
+
+  const sessionsByWorktree = new Map<string, readonly CliSession[]>();
+  for (const session of sessions) {
+    if (!session.terminal?.isOrcaHosted || session.cwd === null) continue;
+    const worktree = normalizeWindowsPath(session.cwd);
+    sessionsByWorktree.set(worktree, [...(sessionsByWorktree.get(worktree) ?? []), session]);
+  }
+
+  const pairs = new Map<number, string>();
+  for (const [worktree, matchingSessions] of sessionsByWorktree) {
+    const handles = handlesByWorktree.get(worktree);
+    if (
+      matchingSessions.length !== 1 ||
+      handles === undefined ||
+      handles.length !== 1
+    ) {
+      continue;
+    }
+    pairs.set(matchingSessions[0].pid, handles[0]);
+  }
+  return pairs;
+}
+
+export function formatResumeCommandForShell(
+  cwd: string,
+  resume: CliResumeCommand,
+  shellName: string
+): string {
+  const normalizedShell = shellName.toLowerCase();
+  if (normalizedShell === "cmd.exe") {
+    return `cd /d "${cwd.replace(/"/g, '""')}" && ${resume.text}`;
+  }
+  if (normalizedShell === "bash.exe") {
+    return `cd -- '${cwd.replace(/'/g, "'\\''")}' && ${resume.text}`;
+  }
+  return `cd '${cwd.replace(/'/g, "''")}'; ${resume.text}`;
 }
 
 function isCodexDesktopPath(value: string | null): boolean {
@@ -187,25 +387,28 @@ function isDescendantOfRoot(
   return false;
 }
 
-function hasTerminalAncestor(
+function terminalAncestor(
   pid: number,
   rows: ReadonlyMap<number, DetectorProcessRow>
-): boolean {
+): CliTerminal | null {
   const seen = new Set<number>();
   let current = pid;
+  let terminal: Omit<CliTerminal, "isOrcaHosted"> | null = null;
+  let isOrcaHosted = false;
   while (rows.has(current)) {
     const row = rows.get(current);
-    if (row === undefined) return false;
-    const parentPid = row.parentPid;
-    if (parentPid <= 0 || seen.has(parentPid)) return false;
-    const parent = rows.get(parentPid);
-    if (parent?.name && TERMINAL_PROCESS_NAMES.has(parent.name.toLowerCase())) {
-      return true;
+    if (row === undefined) return null;
+    const name = row.name?.toLowerCase();
+    if (name === "orca-terminal-daemon.exe") isOrcaHosted = true;
+    if (terminal === null && name && TERMINAL_PROCESS_NAMES.has(name)) {
+      terminal = { pid: row.pid, name: row.name ?? "" };
     }
+    const parentPid = row.parentPid;
+    if (parentPid <= 0 || seen.has(parentPid)) break;
     seen.add(parentPid);
     current = parentPid;
   }
-  return false;
+  return terminal === null ? null : { ...terminal, isOrcaHosted };
 }
 
 function isCliCandidate(
@@ -221,7 +424,7 @@ function isCliCandidate(
   // Elevated (admin-terminal) sessions hide executablePath and cwd from an
   // unelevated scan — keep them as long as a terminal ancestor is visible;
   // the restart path degrades to copying the resume command for them.
-  return hasTerminalAncestor(row.pid, rows);
+  return terminalAncestor(row.pid, rows) !== null;
 }
 
 export function readDetectorOutput(
@@ -232,7 +435,9 @@ export function readDetectorOutput(
   if (!isRecord(value) || !Array.isArray(value.targets)) {
     return providerId === "codex"
       ? []
-      : readDetectorRows(value).map((row) => readSession(row, providerId));
+      : readDetectorRows(value).map((row) =>
+          readSession(row, providerId, new Map([[row.pid, row]]))
+        );
   }
 
   const targets = readDetectorRows(value.targets);
@@ -242,7 +447,7 @@ export function readDetectorOutput(
     .map(readDetectorProcess)
     .filter((row): row is DetectorProcessRow => row !== null)
     .filter((row) => isCliCandidate(row, rows, providerId, rootPid))
-    .map((row) => readSession(row, providerId));
+    .map((row) => readSession(row, providerId, rows));
 }
 
 export function resumeCommandFor(provider: Provider): CliResumeCommand {
@@ -306,6 +511,67 @@ async function commandExists(command: string): Promise<boolean> {
   try {
     await execFileText(WHERE_EXE, [command], 5_000);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+function readOrcaTerminals(value: unknown): readonly OrcaTerminal[] {
+  if (!isRecord(value)) return [];
+  const result = isRecord(value.result) ? value.result : value;
+  if (!Array.isArray(result.terminals)) return [];
+  return result.terminals.flatMap((terminal) => {
+    if (
+      !isRecord(terminal) ||
+      typeof terminal.handle !== "string" ||
+      terminal.handle.length === 0 ||
+      typeof terminal.worktreePath !== "string" ||
+      terminal.worktreePath.length === 0
+    ) {
+      return [];
+    }
+    return [{ handle: terminal.handle, worktreePath: terminal.worktreePath }];
+  });
+}
+
+async function listOrcaTerminals(): Promise<readonly OrcaTerminal[]> {
+  try {
+    const output = await execFileText("orca", ["terminal", "list", "--json"], 5_000);
+    return readOrcaTerminals(JSON.parse(output));
+  } catch {
+    return [];
+  }
+}
+
+async function sendOrcaResume(handle: string, text: string): Promise<boolean> {
+  try {
+    const output = await execFileText(
+      "orca",
+      ["terminal", "send", "--terminal", handle, "--text", text, "--enter", "--json"],
+      5_000
+    );
+    const result: unknown = JSON.parse(output);
+    return isRecord(result) && result.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+async function injectConsoleResume(shellPid: number, text: string): Promise<boolean> {
+  try {
+    const stdout = await execFileStdoutRegardlessOfExit(
+      POWERSHELL_EXE,
+      [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-EncodedCommand",
+        encodePowerShell(consoleInjectionScript(shellPid, text)),
+      ],
+      15_000
+    );
+    const result: unknown = JSON.parse(stdout.trim());
+    return isRecord(result) && result.ok === true;
   } catch {
     return false;
   }
@@ -392,9 +658,11 @@ export async function restartCliSessions(
   resume: CliResumeCommand
 ): Promise<CliRestartResult> {
   const hasWt = await commandExists("wt.exe");
+  let orcaHandles: Map<number, string> | null = null;
   const claimedCodexSessionIds = new Set<string>();
   const claimedClaudeSessionIds = new Set<string>();
   let restarted = 0;
+  let resumedInPlace = 0;
   let manual = 0;
   let failed = 0;
 
@@ -436,6 +704,26 @@ export async function restartCliSessions(
     const stopped = await terminateProcess(session.pid);
     if (!stopped) failed += 1;
 
+    if (stopped && session.terminal) {
+      const inPlaceCommand =
+        cwd === null
+          ? sessionResume.text
+          : formatResumeCommandForShell(cwd, sessionResume, session.terminal.name);
+      let resumed = await injectConsoleResume(session.terminal.pid, inPlaceCommand);
+      if (!resumed && session.terminal.isOrcaHosted && session.cwd !== null) {
+        if (orcaHandles === null) {
+          const terminals = (await commandExists("orca")) ? await listOrcaTerminals() : [];
+          orcaHandles = pairOrcaTerminalHandles(sessions, terminals);
+        }
+        const orcaHandle = orcaHandles.get(session.pid);
+        resumed = orcaHandle !== undefined && (await sendOrcaResume(orcaHandle, inPlaceCommand));
+      }
+      if (resumed) {
+        resumedInPlace += 1;
+        continue;
+      }
+    }
+
     if (cwd === null) {
       if (session.providerId === "codex") {
         cwd = os.homedir(); // the resume picker works from anywhere
@@ -445,6 +733,7 @@ export async function restartCliSessions(
         continue;
       }
     }
+
     const launched = hasWt
       ? launchWithWindowsTerminal(cwd, sessionResume)
       : launchWithPowerShell(cwd, sessionResume);
@@ -455,5 +744,5 @@ export async function restartCliSessions(
     }
   }
 
-  return { restarted, manual, failed };
+  return { restarted, resumedInPlace, manual, failed };
 }

@@ -290,7 +290,8 @@
           optTestCli: "Test CLI restart (no account change)",
           testCliRun: "Testing CLI restart…",
           testCliNone: "No running {p} CLI sessions found.",
-          testCliDone: "{n} CLI session(s) sent through the restart flow.",
+          testCliDone: "{inPlace} resumed in place; {restarted} reopened; {manual} need manual resume; {failed} failed.",
+          testCliDeferred: "CLI restart was not run.",
         },
         ko: {
           title: "계정 관리",
@@ -331,7 +332,8 @@
           optTestCli: "CLI 재시작 테스트 (계정 변경 없음)",
           testCliRun: "CLI 재시작 테스트 중…",
           testCliNone: "실행 중인 {p} CLI 세션이 없습니다.",
-          testCliDone: "{n}개 CLI 세션을 재시작 플로우로 보냈습니다.",
+          testCliDone: "기존 터미널에서 재개 {inPlace}개, 새 터미널에서 다시 열기 {restarted}개, 수동 재개 필요 {manual}개, 실패 {failed}개.",
+          testCliDeferred: "CLI 재시작을 실행하지 않았습니다.",
         },
         ja: {
           title: "アカウント管理",
@@ -372,7 +374,8 @@
           optTestCli: "CLI 再起動テスト（アカウント変更なし）",
           testCliRun: "CLI 再起動をテスト中…",
           testCliNone: "実行中の {p} CLI セッションがありません。",
-          testCliDone: "{n} 件の CLI セッションを再起動フローに送りました。",
+          testCliDone: "既存ターミナルで {inPlace} 件を再開し、新しいターミナルで {restarted} 件を開きました。手動再開は {manual} 件、失敗は {failed} 件です。",
+          testCliDeferred: "CLI の再起動は実行されませんでした。",
         },
         zh: {
           title: "账号管理",
@@ -413,7 +416,8 @@
           optTestCli: "测试 CLI 重启（不切换账号）",
           testCliRun: "正在测试 CLI 重启…",
           testCliNone: "没有正在运行的 {p} CLI 会话。",
-          testCliDone: "已将 {n} 个 CLI 会话送入重启流程。",
+          testCliDone: "已在原终端恢复 {inPlace} 个，已在新终端重新打开 {restarted} 个；{manual} 个需要手动恢复，失败 {failed} 个。",
+          testCliDeferred: "未执行 CLI 重启。",
         },
       };
       let M = DICTS.en;
@@ -716,7 +720,14 @@
             const res = await window.rotator.testCliRestart(prov);
             msg(res.sessions === 0
               ? fmt(M.testCliNone, { p: provInfo(prov).displayName || prov })
-              : fmt(M.testCliDone, { n: res.sessions }));
+              : res.result
+                ? fmt(M.testCliDone, {
+                    inPlace: res.result.resumedInPlace,
+                    restarted: res.result.restarted,
+                    manual: res.result.manual,
+                    failed: res.result.failed,
+                  })
+                : M.testCliDeferred);
           } catch (e) {
             msg(M.loadFailed + e);
           }

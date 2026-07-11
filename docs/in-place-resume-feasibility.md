@@ -47,12 +47,17 @@ command then runs in that shell.
   small native helper) so the app's own process is never touched.
 - **`FlushConsoleInputBuffer`** before writing, to drop stray keystrokes.
 - Orca additionally exposes a supported API (`orca terminal send --terminal
-  <handle>`); prefer it when `orca` is on PATH, since it is a public contract
-  rather than a console-handle trick.
+  <handle>`), but `orca terminal list --json` does not expose the pane's shell
+  pid. It is safe only when exactly one pane and exactly one eligible session
+  share the normalized worktree path; never infer a handle from list order when
+  multiple panes or sessions share a worktree.
 
 ## Fallback ladder
 
-1. Orca-hosted session and `orca` CLI present -> `orca terminal send`.
-2. Any console-hosted session -> console input injection into the parent shell.
-3. Injection fails (elevated, no console) -> current behavior: new wt/PowerShell
-   window, or the manual copy path.
+1. Any console-hosted session -> console input injection into the pid-exact
+   parent shell.
+2. Injection fails, the session is Orca-hosted, and exactly one Orca pane plus
+   one eligible session have the normalized worktree path -> `orca terminal
+   send`.
+3. Otherwise -> current behavior: new wt/PowerShell window, or the manual copy
+   path.
