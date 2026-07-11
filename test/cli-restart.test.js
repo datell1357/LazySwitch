@@ -12,56 +12,47 @@ const { restartCliSessions, resumeCommandFor } = require("../dist/main/cli-sessi
 
 const EMPTY = { restarted: 0, closed: 0, manual: 0, failed: 0 };
 
-function shell(name, overrides = {}) {
-  return { pid: 51, name, isOrcaHosted: false, ...overrides };
+function shell(name) {
+  return { pid: 51, name };
 }
 
 /**
- * Stubs the process-control surface restartCliSessions drives: `where` lookups,
- * `taskkill`, the orca CLI, and the terminal launchers. Returns the recorded
- * calls so a test can assert what the restart actually did.
+ * Stubs the process-control surface restartCliSessions drives: the `where`
+ * lookup, `taskkill`, and the terminal launchers. Returns the recorded calls so
+ * a test can assert what the restart actually did.
  */
-function stubRestart(
-  t,
-  { hasWt = true, hasOrca = false, orcaTerminals = [], unkillable = [], orcaCreateFails = false } = {}
-) {
+function stubRestart(t, { hasWt = true, unkillable = [] } = {}) {
   const killed = [];
   const launches = [];
-  const orcaCreates = [];
 
   t.mock.method(childProcess, "execFile", (file, args, _options, callback) => {
     const exe = path.basename(String(file)).toLowerCase();
-    if (exe === "where.exe") {
-      const wanted = String(args[0]).toLowerCase();
-      if (wanted === "wt.exe" && hasWt) callback(null, "C:\\wt.exe\r\n", "");
-      else if (wanted === "orca" && hasOrca) callback(null, "C:\\orca\\orca.cmd\r\n", "");
-      else callback(new Error("not found"), "", "not found");
-      return;
-    }
     if (exe === "taskkill.exe") {
       killed.push(Number(args[1]));
       callback(null, "", "");
       return;
     }
-    // orca is a .cmd shim, so it is invoked through cmd.exe /d /c <path> ...
-    if (exe === "cmd.exe" && String(args[2] ?? "").toLowerCase().endsWith("orca.cmd")) {
-      const orcaArgs = args.slice(3);
-      if (orcaArgs[1] === "list") {
-        callback(null, JSON.stringify({ ok: true, result: { terminals: orcaTerminals } }), "");
-        return;
-      }
-      if (orcaArgs[1] === "create") {
-        orcaCreates.push({ worktree: orcaArgs[3], command: orcaArgs[5] });
-        callback(null, JSON.stringify({ ok: !orcaCreateFails }), "");
-        return;
-      }
-    }
     callback(null, "", "");
   });
 
+  // Windows Terminal is never probed; a launch either fires "spawn" or "error".
   t.mock.method(childProcess, "spawn", (command, args, options) => {
-    launches.push({ command, args, options });
-    return { on() { return this; }, unref() {} };
+    const isWt = path.basename(String(command)).toLowerCase() === "wt.exe";
+    const succeeds = !isWt || hasWt;
+    if (succeeds) launches.push({ command, args, options });
+    const handlers = {};
+    const child = {
+      once(event, handler) {
+        handlers[event] = handler;
+        return this;
+      },
+      unref() {},
+    };
+    queueMicrotask(() => {
+      const handler = handlers[succeeds ? "spawn" : "error"];
+      if (handler) handler(succeeds ? undefined : new Error("ENOENT"));
+    });
+    return child;
   });
 
   // A pid in `unkillable` survives taskkill, standing in for an elevated shell.
@@ -71,7 +62,7 @@ function stubRestart(
   });
   t.mock.method(global, "setTimeout", (callback) => { callback(); return 0; });
 
-  return { killed, launches, orcaCreates };
+  return { killed, launches };
 }
 
 test("restart accounting records each session in exactly one bucket", () => {
@@ -146,91 +137,19 @@ test("a terminal emulator host is never closed, only the new terminal opens", as
   assert.deepEqual(calls.killed, [501]); // the emulator may own other tabs
 });
 
-test("an orca session reopens as a new orca terminal in its worktree", async (t) => {
+test("a session without a terminal ancestor still reopens in a new terminal", async (t) => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
-  const calls = stubRestart(t, {
-    hasOrca: true,
-    orcaTerminals: [
-      { worktreeId: "wt-1", worktreePath: cwd.replace(/\\/g, "/") },
-      { worktreeId: "wt-1", worktreePath: cwd.replace(/\\/g, "/") },
-    ],
-  });
+  const calls = stubRestart(t);
   t.mock.method(codexRollouts, "findCodexRolloutForProcess", async () => null);
 
   const result = await restartCliSessions(
-    [
-      {
-        providerId: "codex",
-        pid: 501,
-        startTime: null,
-        cwd,
-        terminal: shell("powershell.exe", { isOrcaHosted: true }),
-      },
-    ],
+    [{ providerId: "codex", pid: 501, startTime: null, cwd, terminal: null }],
     resumeCommandFor({ id: "codex" })
   );
 
-  assert.deepEqual(result, { restarted: 1, closed: 1, manual: 0, failed: 0 });
-  // Two panes share the worktree, but creating a terminal needs no pane identity.
-  assert.equal(calls.orcaCreates.length, 1);
-  assert.equal(calls.orcaCreates[0].worktree, "id:wt-1");
-  assert.equal(calls.orcaCreates[0].command, "codex resume");
-  assert.equal(calls.launches.length, 0); // no stray window outside orca
-});
-
-test("an orca session falls back to a window when orca cannot open a terminal", async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
-  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
-  const calls = stubRestart(t, {
-    hasOrca: true,
-    orcaCreateFails: true,
-    orcaTerminals: [{ worktreeId: "wt-1", worktreePath: cwd }],
-  });
-  t.mock.method(codexRollouts, "findCodexRolloutForProcess", async () => null);
-
-  const result = await restartCliSessions(
-    [
-      {
-        providerId: "codex",
-        pid: 501,
-        startTime: null,
-        cwd,
-        terminal: shell("powershell.exe", { isOrcaHosted: true }),
-      },
-    ],
-    resumeCommandFor({ id: "codex" })
-  );
-
-  assert.deepEqual(result, { restarted: 1, closed: 1, manual: 0, failed: 0 });
-  assert.equal(calls.orcaCreates.length, 1); // tried orca first
-  assert.equal(calls.launches.length, 1); // then opened a window instead
-});
-
-test("an orca session whose worktree is unknown opens a window instead of guessing", async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
-  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
-  const calls = stubRestart(t, {
-    hasOrca: true,
-    orcaTerminals: [{ worktreeId: "wt-other", worktreePath: "D:\\elsewhere" }],
-  });
-  t.mock.method(codexRollouts, "findCodexRolloutForProcess", async () => null);
-
-  const result = await restartCliSessions(
-    [
-      {
-        providerId: "codex",
-        pid: 501,
-        startTime: null,
-        cwd,
-        terminal: shell("powershell.exe", { isOrcaHosted: true }),
-      },
-    ],
-    resumeCommandFor({ id: "codex" })
-  );
-
-  assert.deepEqual(result, { restarted: 1, closed: 1, manual: 0, failed: 0 });
-  assert.equal(calls.orcaCreates.length, 0); // never create in the wrong worktree
+  assert.deepEqual(result, { restarted: 1, closed: 0, manual: 0, failed: 0 });
+  assert.deepEqual(calls.killed, [501]);
   assert.equal(calls.launches.length, 1);
 });
 
@@ -258,4 +177,19 @@ test("a codex session without a working directory reopens from the home director
 
   assert.deepEqual(result, { restarted: 1, closed: 1, manual: 0, failed: 0 });
   assert.deepEqual(calls.launches[0].args, ["-d", os.homedir(), "codex", "resume"]);
+});
+
+test("a failed Windows Terminal launch falls back to a PowerShell window", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const calls = stubRestart(t, { hasWt: false });
+  t.mock.method(codexRollouts, "findCodexRolloutForProcess", async () => null);
+
+  const result = await restartCliSessions(
+    [{ providerId: "codex", pid: 501, startTime: null, cwd, terminal: shell("powershell.exe") }],
+    resumeCommandFor({ id: "codex" })
+  );
+
+  assert.deepEqual(result, { restarted: 1, closed: 1, manual: 0, failed: 0 });
+  assert.equal(path.basename(calls.launches[0].command).toLowerCase(), "cmd.exe");
 });

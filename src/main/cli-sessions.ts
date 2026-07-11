@@ -21,7 +21,6 @@ export interface CliSession {
 export interface CliTerminal {
   readonly pid: number;
   readonly name: string;
-  readonly isOrcaHosted: boolean;
 }
 
 export interface CliResumeCommand {
@@ -35,11 +34,6 @@ export interface CliRestartResult {
   readonly closed: number;
   readonly manual: number;
   readonly failed: number;
-}
-
-interface OrcaTerminal {
-  readonly worktreeId: string;
-  readonly worktreePath: string;
 }
 
 interface DetectorProcessRow {
@@ -225,22 +219,19 @@ function terminalAncestor(
 ): CliTerminal | null {
   const seen = new Set<number>();
   let current = pid;
-  let terminal: Omit<CliTerminal, "isOrcaHosted"> | null = null;
-  let isOrcaHosted = false;
   while (rows.has(current)) {
     const row = rows.get(current);
     if (row === undefined) return null;
     const name = row.name?.toLowerCase();
-    if (name === "orca-terminal-daemon.exe") isOrcaHosted = true;
-    if (terminal === null && name && TERMINAL_PROCESS_NAMES.has(name)) {
-      terminal = { pid: row.pid, name: row.name ?? "" };
+    if (name && TERMINAL_PROCESS_NAMES.has(name)) {
+      return { pid: row.pid, name: row.name ?? "" };
     }
     const parentPid = row.parentPid;
     if (parentPid <= 0 || seen.has(parentPid)) break;
     seen.add(parentPid);
     current = parentPid;
   }
-  return terminal === null ? null : { ...terminal, isOrcaHosted };
+  return null;
 }
 
 function isCliCandidate(
@@ -339,122 +330,64 @@ async function terminateProcess(pid: number): Promise<boolean> {
   return !isProcessAlive(pid);
 }
 
-async function resolveCommandPath(command: string): Promise<string | null> {
-  try {
-    const stdout = await execFileText(WHERE_EXE, [command], 5_000);
-    const first = stdout.split(/\r?\n/).find((line) => line.trim().length > 0);
-    return first === undefined ? null : first.trim();
-  } catch {
-    return null;
-  }
-}
-
 /**
- * Windows Terminal ships as an app execution alias, which `where` does not
- * resolve, so a PATH lookup alone would always fall back to a plain console.
+ * Windows Terminal cannot be probed before use: it ships as an app execution
+ * alias that `where` misses and `stat` rejects with EACCES, and it is absent
+ * from the PATH of a packaged app. So launch it and let the spawn itself be the
+ * test — a failure surfaces as an async "error" event, not a throw.
  */
-async function findWindowsTerminal(): Promise<boolean> {
-  if ((await resolveCommandPath("wt.exe")) !== null) return true;
-  const localAppData = process.env.LOCALAPPDATA;
-  if (localAppData === undefined) return false;
-  try {
-    await stat(path.join(localAppData, "Microsoft", "WindowsApps", "wt.exe"));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * `orca` is a .cmd shim, and execFile cannot run one without a shell, so route
- * it through cmd.exe using the path `where` resolved.
- */
-async function runOrca(
-  orcaPath: string,
+function spawnDetached(
+  command: string,
   args: readonly string[],
-  timeoutMs: number
-): Promise<string> {
-  return /\.(cmd|bat)$/i.test(orcaPath)
-    ? execFileText(CMD_EXE, ["/d", "/c", orcaPath, ...args], timeoutMs)
-    : execFileText(orcaPath, args, timeoutMs);
-}
-
-function readOrcaTerminals(value: unknown): readonly OrcaTerminal[] {
-  if (!isRecord(value)) return [];
-  const result = isRecord(value.result) ? value.result : value;
-  if (!Array.isArray(result.terminals)) return [];
-  return result.terminals.flatMap((terminal) => {
-    if (
-      !isRecord(terminal) ||
-      typeof terminal.worktreeId !== "string" ||
-      terminal.worktreeId.length === 0 ||
-      typeof terminal.worktreePath !== "string" ||
-      terminal.worktreePath.length === 0
-    ) {
-      return [];
+  options: Parameters<typeof spawn>[2]
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const child = spawn(command, [...args], options);
+      child.once("error", () => resolve(false));
+      child.once("spawn", () => {
+        child.unref();
+        resolve(true);
+      });
+    } catch {
+      resolve(false);
     }
-    return [{ worktreeId: terminal.worktreeId, worktreePath: terminal.worktreePath }];
   });
 }
 
-async function listOrcaTerminals(orcaPath: string): Promise<readonly OrcaTerminal[]> {
-  try {
-    const output = await runOrca(orcaPath, ["terminal", "list", "--json"], 10_000);
-    return readOrcaTerminals(JSON.parse(output));
-  } catch {
-    return [];
-  }
+function launchWithWindowsTerminal(cwd: string, resume: CliResumeCommand): Promise<boolean> {
+  return spawnDetached("wt.exe", ["-d", cwd, resume.command, ...resume.args], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: false,
+  });
 }
 
-function launchWithWindowsTerminal(cwd: string, resume: CliResumeCommand): boolean {
-  try {
-    const child = spawn("wt.exe", ["-d", cwd, resume.command, ...resume.args], {
+function launchWithPowerShell(cwd: string, resume: CliResumeCommand): Promise<boolean> {
+  return spawnDetached(
+    CMD_EXE,
+    [
+      "/d",
+      "/c",
+      "start",
+      "",
+      POWERSHELL_EXE,
+      "-NoExit",
+      "-EncodedCommand",
+      encodePowerShell(POWERSHELL_RESUME_SCRIPT),
+    ],
+    {
+      cwd,
       detached: true,
+      env: {
+        ...process.env,
+        LAZYSWITCH_CLI_COMMAND: resume.command,
+        LAZYSWITCH_CLI_ARGS: JSON.stringify(resume.args),
+      },
       stdio: "ignore",
       windowsHide: false,
-    });
-    // Launch failures surface as an async "error" event; without a listener
-    // they crash the main process instead of just losing the relaunch.
-    child.on("error", (error) => console.warn("[cli] wt launch failed", error));
-    child.unref();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function launchWithPowerShell(cwd: string, resume: CliResumeCommand): boolean {
-  try {
-    const child = spawn(
-      CMD_EXE,
-      [
-        "/d",
-        "/c",
-        "start",
-        "",
-        POWERSHELL_EXE,
-        "-NoExit",
-        "-EncodedCommand",
-        encodePowerShell(POWERSHELL_RESUME_SCRIPT),
-      ],
-      {
-        cwd,
-        detached: true,
-        env: {
-          ...process.env,
-          LAZYSWITCH_CLI_COMMAND: resume.command,
-          LAZYSWITCH_CLI_ARGS: JSON.stringify(resume.args),
-        },
-        stdio: "ignore",
-        windowsHide: false,
-      }
-    );
-    child.on("error", (error) => console.warn("[cli] relaunch failed", error));
-    child.unref();
-    return true;
-  } catch {
-    return false;
-  }
+    }
+  );
 }
 
 function codexResumeCommand(sessionId: string): CliResumeCommand {
@@ -492,93 +425,16 @@ async function closeHostTerminal(terminal: CliTerminal): Promise<boolean> {
   return terminateProcess(terminal.pid);
 }
 
-/**
- * Pick the worktree that owns the session's directory. Orca's `path:` selector
- * does not resolve reliably here, so terminals are matched by their worktree
- * path and created with the `id:` selector taken from the same listing.
- */
-export function orcaWorktreeIdForCwd(
-  terminals: readonly OrcaTerminal[],
-  cwd: string
-): string | null {
-  const target = normalizeWindowsPath(cwd);
-  let best: OrcaTerminal | null = null;
-  for (const terminal of terminals) {
-    const worktree = normalizeWindowsPath(terminal.worktreePath);
-    if (target !== worktree && !target.startsWith(worktree + "\\")) continue;
-    if (best === null || worktree.length > normalizeWindowsPath(best.worktreePath).length) {
-      best = terminal;
-    }
-  }
-  return best === null ? null : best.worktreeId;
-}
-
-async function createOrcaTerminal(
-  orcaPath: string,
-  worktreeId: string,
-  resume: CliResumeCommand
-): Promise<boolean> {
-  try {
-    const output = await runOrca(
-      orcaPath,
-      [
-        "terminal",
-        "create",
-        "--worktree",
-        `id:${worktreeId}`,
-        "--command",
-        [resume.command, ...resume.args].join(" "),
-        "--json",
-      ],
-      25_000
-    );
-    const result: unknown = JSON.parse(output);
-    return isRecord(result) && result.ok === true;
-  } catch {
-    return false;
-  }
-}
-
-interface RestartContext {
-  readonly hasWt: boolean;
-  readonly orcaPath: string | null;
-  readonly orcaTerminals: readonly OrcaTerminal[];
-}
-
-/**
- * Reopen the session in a brand-new terminal. Orca-hosted sessions get a new
- * Orca terminal so the user stays inside the app they were working in; anything
- * else gets a Windows Terminal tab, falling back to a PowerShell window.
- */
-async function reopenInNewTerminal(
-  session: CliSession,
-  cwd: string,
-  resume: CliResumeCommand,
-  context: RestartContext
-): Promise<boolean> {
-  if (session.terminal?.isOrcaHosted && context.orcaPath !== null) {
-    const worktreeId = orcaWorktreeIdForCwd(context.orcaTerminals, cwd);
-    if (worktreeId !== null && (await createOrcaTerminal(context.orcaPath, worktreeId, resume))) {
-      return true;
-    }
-  }
-  return context.hasWt
-    ? launchWithWindowsTerminal(cwd, resume)
-    : launchWithPowerShell(cwd, resume);
+/** Reopen the session in a Windows Terminal tab, or a PowerShell window if that fails. */
+async function reopenInNewTerminal(cwd: string, resume: CliResumeCommand): Promise<boolean> {
+  if (await launchWithWindowsTerminal(cwd, resume)) return true;
+  return launchWithPowerShell(cwd, resume);
 }
 
 export async function restartCliSessions(
   sessions: readonly CliSession[],
   resume: CliResumeCommand
 ): Promise<CliRestartResult> {
-  const orcaPath = sessions.some((session) => session.terminal?.isOrcaHosted === true)
-    ? await resolveCommandPath("orca")
-    : null;
-  const context: RestartContext = {
-    hasWt: await findWindowsTerminal(),
-    orcaPath,
-    orcaTerminals: orcaPath === null ? [] : await listOrcaTerminals(orcaPath),
-  };
   const claimedCodexSessionIds = new Set<string>();
   const claimedClaudeSessionIds = new Set<string>();
   let counters: CliRestartCounters = { restarted: 0, closed: 0, manual: 0, failed: 0 };
@@ -632,12 +488,7 @@ export async function restartCliSessions(
       }
     }
 
-    const outcome: CliRestartOutcome = (await reopenInNewTerminal(
-      session,
-      cwd,
-      sessionResume,
-      context
-    ))
+    const outcome: CliRestartOutcome = (await reopenInNewTerminal(cwd, sessionResume))
       ? "restarted"
       : "failed";
     counters = recordCliRestartOutcome(counters, outcome);
