@@ -528,10 +528,10 @@
           ? (a.label || "").split(" · ").filter((x) => x !== a.email).join(" · ")
           : (a.label || "");
         const email = a.email || (a.usage && a.usage.email) || fallbackLabel;
-        const displayName = a.email || (a.usage && a.usage.email) || a.name;
+        const displayName = a.name;
         const active = a.active ? `<span class="active-badge">${M.activeBadge}</span>` : "";
         const badge = plan ? `<span class="plan-badge">${esc(plan)}</span>` : "";
-        const sub = email && email !== displayName ? email : a.name !== displayName ? a.name : "";
+        const sub = email && email !== a.name ? email : "";
         const emailLine = sub ? `<div class="acct-email">${esc(sub)}</div>` : "";
         return `<div class="acct-head">
           <div class="name-row">
