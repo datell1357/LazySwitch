@@ -21,6 +21,12 @@ export interface CliSession {
 export interface CliTerminal {
   readonly pid: number;
   readonly name: string;
+  readonly isOrcaHosted: boolean;
+}
+
+interface OrcaTerminal {
+  readonly worktreeId: string;
+  readonly worktreePath: string;
 }
 
 export interface CliResumeCommand {
@@ -87,6 +93,8 @@ const CLOSABLE_SHELL_NAMES = new Set([
   "powershell.exe",
   "pwsh.exe",
 ]);
+
+const ORCA_TERMINAL_DAEMON = "orca-terminal-daemon.exe";
 
 const RESUME_COMMANDS: Record<Provider["id"], CliResumeCommand> = {
   codex: { text: "codex resume", command: "codex", args: ["resume"] },
@@ -219,19 +227,24 @@ function terminalAncestor(
 ): CliTerminal | null {
   const seen = new Set<number>();
   let current = pid;
+  let shell: { pid: number; name: string } | null = null;
+  let isOrcaHosted = false;
+  // Keep walking past the shell: the Orca daemon sits above it, and only that
+  // tells us the session lives in an Orca tab rather than a desktop console.
   while (rows.has(current)) {
     const row = rows.get(current);
-    if (row === undefined) return null;
+    if (row === undefined) break;
     const name = row.name?.toLowerCase();
-    if (name && TERMINAL_PROCESS_NAMES.has(name)) {
-      return { pid: row.pid, name: row.name ?? "" };
+    if (name === ORCA_TERMINAL_DAEMON) isOrcaHosted = true;
+    if (shell === null && name && TERMINAL_PROCESS_NAMES.has(name)) {
+      shell = { pid: row.pid, name: row.name ?? "" };
     }
     const parentPid = row.parentPid;
     if (parentPid <= 0 || seen.has(parentPid)) break;
     seen.add(parentPid);
     current = parentPid;
   }
-  return null;
+  return shell === null ? null : { ...shell, isOrcaHosted };
 }
 
 function isCliCandidate(
@@ -330,6 +343,105 @@ async function terminateProcess(pid: number): Promise<boolean> {
   return !isProcessAlive(pid);
 }
 
+async function resolveCommandPath(command: string): Promise<string | null> {
+  try {
+    const stdout = await execFileText(WHERE_EXE, [command], 5_000);
+    const first = stdout.split(/\r?\n/).find((line) => line.trim().length > 0);
+    return first === undefined ? null : first.trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `orca` is a .cmd shim, and execFile cannot launch one without a shell, so it
+ * is routed through cmd.exe using the path `where` resolved.
+ */
+async function runOrca(
+  orcaPath: string,
+  args: readonly string[],
+  timeoutMs: number
+): Promise<string> {
+  return /\.(cmd|bat)$/i.test(orcaPath)
+    ? execFileText(CMD_EXE, ["/d", "/c", orcaPath, ...args], timeoutMs)
+    : execFileText(orcaPath, args, timeoutMs);
+}
+
+function readOrcaTerminals(value: unknown): readonly OrcaTerminal[] {
+  if (!isRecord(value)) return [];
+  const result = isRecord(value.result) ? value.result : value;
+  if (!Array.isArray(result.terminals)) return [];
+  return result.terminals.flatMap((terminal) => {
+    if (
+      !isRecord(terminal) ||
+      typeof terminal.worktreeId !== "string" ||
+      terminal.worktreeId.length === 0 ||
+      typeof terminal.worktreePath !== "string" ||
+      terminal.worktreePath.length === 0
+    ) {
+      return [];
+    }
+    return [{ worktreeId: terminal.worktreeId, worktreePath: terminal.worktreePath }];
+  });
+}
+
+async function listOrcaTerminals(orcaPath: string): Promise<readonly OrcaTerminal[]> {
+  try {
+    return readOrcaTerminals(
+      JSON.parse(await runOrca(orcaPath, ["terminal", "list", "--json"], 10_000))
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Pick the worktree that owns the session's directory. Orca's `path:` selector
+ * times out waiting for a terminal handle, so the worktree is matched by path
+ * here and then addressed by the `id:` taken from the same listing.
+ */
+export function orcaWorktreeIdForCwd(
+  terminals: readonly OrcaTerminal[],
+  cwd: string
+): string | null {
+  const target = normalizeWindowsPath(cwd);
+  let best: OrcaTerminal | null = null;
+  for (const terminal of terminals) {
+    const worktree = normalizeWindowsPath(terminal.worktreePath);
+    if (target !== worktree && !target.startsWith(worktree + "\\")) continue;
+    if (best === null || worktree.length > normalizeWindowsPath(best.worktreePath).length) {
+      best = terminal;
+    }
+  }
+  return best === null ? null : best.worktreeId;
+}
+
+async function createOrcaTerminal(
+  orcaPath: string,
+  worktreeId: string,
+  resume: CliResumeCommand
+): Promise<boolean> {
+  try {
+    const output = await runOrca(
+      orcaPath,
+      [
+        "terminal",
+        "create",
+        "--worktree",
+        `id:${worktreeId}`,
+        "--command",
+        [resume.command, ...resume.args].join(" "),
+        "--json",
+      ],
+      25_000
+    );
+    const result: unknown = JSON.parse(output);
+    return isRecord(result) && result.ok === true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Windows Terminal cannot be probed before use: it ships as an app execution
  * alias that `where` misses and `stat` rejects with EACCES, and it is absent
@@ -425,16 +537,48 @@ async function closeHostTerminal(terminal: CliTerminal): Promise<boolean> {
   return terminateProcess(terminal.pid);
 }
 
-/** Reopen the session in a Windows Terminal tab, or a PowerShell window if that fails. */
-async function reopenInNewTerminal(cwd: string, resume: CliResumeCommand): Promise<boolean> {
+interface OrcaContext {
+  readonly orcaPath: string;
+  readonly terminals: readonly OrcaTerminal[];
+}
+
+/**
+ * Reopen the session in a fresh terminal. A session that lived in an Orca tab
+ * gets another Orca tab and nothing else — it must never spill a desktop console
+ * onto the user's machine, so a failure here is a failure, not a reason to open a
+ * window. Everything else gets a Windows Terminal tab, or a PowerShell window if
+ * that cannot launch.
+ */
+async function reopenInNewTerminal(
+  session: CliSession,
+  cwd: string,
+  resume: CliResumeCommand,
+  orca: OrcaContext | null
+): Promise<boolean> {
+  if (session.terminal?.isOrcaHosted === true) {
+    if (orca === null) return false;
+    const worktreeId = orcaWorktreeIdForCwd(orca.terminals, cwd);
+    if (worktreeId === null) return false;
+    return createOrcaTerminal(orca.orcaPath, worktreeId, resume);
+  }
   if (await launchWithWindowsTerminal(cwd, resume)) return true;
   return launchWithPowerShell(cwd, resume);
+}
+
+async function resolveOrcaContext(
+  sessions: readonly CliSession[]
+): Promise<OrcaContext | null> {
+  if (!sessions.some((session) => session.terminal?.isOrcaHosted === true)) return null;
+  const orcaPath = await resolveCommandPath("orca");
+  if (orcaPath === null) return null;
+  return { orcaPath, terminals: await listOrcaTerminals(orcaPath) };
 }
 
 export async function restartCliSessions(
   sessions: readonly CliSession[],
   resume: CliResumeCommand
 ): Promise<CliRestartResult> {
+  const orca = await resolveOrcaContext(sessions);
   const claimedCodexSessionIds = new Set<string>();
   const claimedClaudeSessionIds = new Set<string>();
   let counters: CliRestartCounters = { restarted: 0, closed: 0, manual: 0, failed: 0 };
@@ -488,7 +632,12 @@ export async function restartCliSessions(
       }
     }
 
-    const outcome: CliRestartOutcome = (await reopenInNewTerminal(cwd, sessionResume))
+    const outcome: CliRestartOutcome = (await reopenInNewTerminal(
+      session,
+      cwd,
+      sessionResume,
+      orca
+    ))
       ? "restarted"
       : "failed";
     counters = recordCliRestartOutcome(counters, outcome);

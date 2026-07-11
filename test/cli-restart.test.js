@@ -12,25 +12,50 @@ const { restartCliSessions, resumeCommandFor } = require("../dist/main/cli-sessi
 
 const EMPTY = { restarted: 0, closed: 0, manual: 0, failed: 0 };
 
-function shell(name) {
-  return { pid: 51, name };
+function shell(name, overrides = {}) {
+  return { pid: 51, name, isOrcaHosted: false, ...overrides };
 }
 
 /**
  * Stubs the process-control surface restartCliSessions drives: the `where`
- * lookup, `taskkill`, and the terminal launchers. Returns the recorded calls so
- * a test can assert what the restart actually did.
+ * lookup, `taskkill`, the orca CLI, and the terminal launchers. Returns the
+ * recorded calls so a test can assert what the restart actually did.
  */
-function stubRestart(t, { hasWt = true, unkillable = [] } = {}) {
+function stubRestart(
+  t,
+  { hasWt = true, unkillable = [], hasOrca = false, orcaTerminals = [], orcaCreateFails = false } = {}
+) {
   const killed = [];
   const launches = [];
+  const orcaCreates = [];
 
   t.mock.method(childProcess, "execFile", (file, args, _options, callback) => {
     const exe = path.basename(String(file)).toLowerCase();
+    if (exe === "where.exe") {
+      if (String(args[0]).toLowerCase() === "orca" && hasOrca) {
+        callback(null, "C:\\orca\\orca.cmd\r\n", "");
+      } else {
+        callback(new Error("not found"), "", "not found");
+      }
+      return;
+    }
     if (exe === "taskkill.exe") {
       killed.push(Number(args[1]));
       callback(null, "", "");
       return;
+    }
+    // orca is a .cmd shim, so it runs through cmd.exe /d /c <path> ...
+    if (exe === "cmd.exe" && String(args[2] ?? "").toLowerCase().endsWith("orca.cmd")) {
+      const orcaArgs = args.slice(3);
+      if (orcaArgs[1] === "list") {
+        callback(null, JSON.stringify({ ok: true, result: { terminals: orcaTerminals } }), "");
+        return;
+      }
+      if (orcaArgs[1] === "create") {
+        orcaCreates.push({ worktree: orcaArgs[3], command: orcaArgs[5] });
+        callback(null, JSON.stringify({ ok: !orcaCreateFails }), "");
+        return;
+      }
     }
     callback(null, "", "");
   });
@@ -62,7 +87,7 @@ function stubRestart(t, { hasWt = true, unkillable = [] } = {}) {
   });
   t.mock.method(global, "setTimeout", (callback) => { callback(); return 0; });
 
-  return { killed, launches };
+  return { killed, launches, orcaCreates };
 }
 
 test("restart accounting records each session in exactly one bucket", () => {
@@ -150,6 +175,105 @@ test("a session without a terminal ancestor still reopens in a new terminal", as
 
   assert.deepEqual(result, { restarted: 1, closed: 0, manual: 0, failed: 0 });
   assert.deepEqual(calls.killed, [501]);
+  assert.equal(calls.launches.length, 1);
+});
+
+test("an orca session reopens as an orca tab and never opens a desktop terminal", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const calls = stubRestart(t, {
+    hasOrca: true,
+    orcaTerminals: [{ worktreeId: "wt-1", worktreePath: cwd.replace(/\\/g, "/") }],
+  });
+  t.mock.method(codexRollouts, "findCodexRolloutForProcess", async () => null);
+
+  const result = await restartCliSessions(
+    [
+      {
+        providerId: "codex",
+        pid: 501,
+        startTime: null,
+        cwd,
+        terminal: shell("powershell.exe", { isOrcaHosted: true }),
+      },
+    ],
+    resumeCommandFor({ id: "codex" })
+  );
+
+  assert.deepEqual(result, { restarted: 1, closed: 1, manual: 0, failed: 0 });
+  assert.equal(calls.orcaCreates.length, 1);
+  assert.equal(calls.orcaCreates[0].worktree, "id:wt-1");
+  assert.equal(calls.orcaCreates[0].command, "codex resume");
+  assert.equal(calls.launches.length, 0);
+});
+
+test("an orca session that cannot get an orca tab fails instead of opening a window", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const calls = stubRestart(t, {
+    hasOrca: true,
+    orcaCreateFails: true,
+    orcaTerminals: [{ worktreeId: "wt-1", worktreePath: cwd }],
+  });
+  t.mock.method(codexRollouts, "findCodexRolloutForProcess", async () => null);
+
+  const result = await restartCliSessions(
+    [
+      {
+        providerId: "codex",
+        pid: 501,
+        startTime: null,
+        cwd,
+        terminal: shell("powershell.exe", { isOrcaHosted: true }),
+      },
+    ],
+    resumeCommandFor({ id: "codex" })
+  );
+
+  assert.deepEqual(result, { restarted: 0, closed: 1, manual: 0, failed: 1 });
+  assert.equal(calls.launches.length, 0); // never spills a desktop console
+});
+
+test("an orca session without a resolvable worktree fails instead of opening a window", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const calls = stubRestart(t, {
+    hasOrca: true,
+    orcaTerminals: [{ worktreeId: "wt-other", worktreePath: "D:\\elsewhere" }],
+  });
+  t.mock.method(codexRollouts, "findCodexRolloutForProcess", async () => null);
+
+  const result = await restartCliSessions(
+    [
+      {
+        providerId: "codex",
+        pid: 501,
+        startTime: null,
+        cwd,
+        terminal: shell("powershell.exe", { isOrcaHosted: true }),
+      },
+    ],
+    resumeCommandFor({ id: "codex" })
+  );
+
+  assert.deepEqual(result, { restarted: 0, closed: 1, manual: 0, failed: 1 });
+  assert.equal(calls.orcaCreates.length, 0);
+  assert.equal(calls.launches.length, 0);
+});
+
+test("orca is never consulted when no session lives in an orca tab", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cli-restart-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const calls = stubRestart(t, { hasOrca: true, orcaTerminals: [{ worktreeId: "wt-1", worktreePath: cwd }] });
+  t.mock.method(codexRollouts, "findCodexRolloutForProcess", async () => null);
+
+  const result = await restartCliSessions(
+    [{ providerId: "codex", pid: 501, startTime: null, cwd, terminal: shell("powershell.exe") }],
+    resumeCommandFor({ id: "codex" })
+  );
+
+  assert.deepEqual(result, { restarted: 1, closed: 1, manual: 0, failed: 0 });
+  assert.equal(calls.orcaCreates.length, 0);
   assert.equal(calls.launches.length, 1);
 });
 

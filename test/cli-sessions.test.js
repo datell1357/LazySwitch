@@ -91,8 +91,8 @@ test("detected cwd loses its trailing backslash but keeps drive roots", () => {
   assert.equal(sessions[1].cwd, "D:\\");
 });
 
-test("detector resolves the nearest shell through intermediate processes", () => {
-  const sessions = readDetectorOutput(
+function codexUnder(parents) {
+  return readDetectorOutput(
     detectorValue(
       [
         {
@@ -104,15 +104,29 @@ test("detector resolves the nearest shell through intermediate processes", () =>
           cwd: "D:\\work",
         },
       ],
-      [
-        { pid: 80, parentPid: 60, name: "node.exe", executablePath: null },
-        { pid: 60, parentPid: 40, name: "pwsh.exe", executablePath: null },
-        { pid: 40, parentPid: 1, name: "explorer.exe", executablePath: null },
-      ]
+      parents
     ),
     "codex",
     ROOT_PID
   );
+}
 
-  assert.deepEqual(sessions[0].terminal, { pid: 60, name: "pwsh.exe" });
+test("detector resolves the nearest shell through intermediate processes", () => {
+  const sessions = codexUnder([
+    { pid: 80, parentPid: 60, name: "node.exe", executablePath: null },
+    { pid: 60, parentPid: 40, name: "pwsh.exe", executablePath: null },
+    { pid: 40, parentPid: 1, name: "explorer.exe", executablePath: null },
+  ]);
+
+  assert.deepEqual(sessions[0].terminal, { pid: 60, name: "pwsh.exe", isOrcaHosted: false });
+});
+
+test("detector marks a shell hosted by the Orca terminal daemon", () => {
+  const sessions = codexUnder([
+    { pid: 80, parentPid: 60, name: "node.exe", executablePath: null },
+    { pid: 60, parentPid: 40, name: "pwsh.exe", executablePath: null },
+    { pid: 40, parentPid: 1, name: "orca-terminal-daemon.exe", executablePath: null },
+  ]);
+
+  assert.deepEqual(sessions[0].terminal, { pid: 60, name: "pwsh.exe", isOrcaHosted: true });
 });
