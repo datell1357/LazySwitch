@@ -1,4 +1,4 @@
-<p align="right">
+<p align="center">
   <a href="README.md"><b>English</b></a> ·
   <a href="README.ko.md">한국어</a>
 </p>
