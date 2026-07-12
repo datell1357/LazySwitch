@@ -29,11 +29,11 @@ Windows tray app that keeps several **Codex** 및 **Claude** accounts enrolled l
 </p>
 
 <sub>
-  <a href="#install">설치하기</a> ·
+  <a href="#install">install</a> ·
   <a href="#first-run">First run</a> ·
   <a href="#what-a-switch-does">What a switch does</a> ·
   <a href="#cli-session-handover">CLI session handover</a> ·
-  <a href="#settings">설정</a> ·
+  <a href="#settings">settings</a> ·
   <a href="#command-line">Command line</a> ·
   <a href="#boundaries">Boundaries</a> ·
   <a href="#license-and-attribution">License</a>
