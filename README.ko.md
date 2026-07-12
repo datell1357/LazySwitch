@@ -1,3 +1,8 @@
+<p align="right">
+  <a href="README.md">English</a> ·
+  <a href="README.ko.md"><b>한국어</b></a>
+</p>
+
 <div align="center">
 
 # LazySwitch
@@ -22,11 +27,6 @@
 <p>
   <img src="assets/accounts.png" alt="LazySwitch 계정 관리자" width="880">
 </p>
-
-<sub>
-  <a href="README.md">English</a> ·
-  <b>한국어</b>
-</sub>
 
 <sub>
   <a href="#설치">설치</a> ·

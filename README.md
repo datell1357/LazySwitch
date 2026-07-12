@@ -1,3 +1,8 @@
+<p align="right">
+  <a href="README.md"><b>English</b></a> ·
+  <a href="README.ko.md">한국어</a>
+</p>
+
 <div align="center">
 
 # LazySwitch
@@ -22,11 +27,6 @@ Windows tray app that keeps several **Codex** and **Claude** accounts enrolled l
 <p>
   <img src="assets/accounts.png" alt="LazySwitch account manager" width="880">
 </p>
-
-<sub>
-  <b>English</b> ·
-  <a href="README.ko.md">한국어</a>
-</sub>
 
 <sub>
   <a href="#install">Install</a> ·
