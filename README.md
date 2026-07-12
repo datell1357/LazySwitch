@@ -1,5 +1,5 @@
-<p align="right">
-  <a href="README.md"><b>English</b></a> ·
+<p align="middle">
+  <a href="README.md"><b>영어</b></a> ·
   <a href="README.ko.md">한국어</a>
 </p>
 
@@ -9,7 +9,7 @@
 
 Stop doing the logout → login dance. When one account is spent, the next one takes over.
 
-Windows tray app that keeps several **Codex** and **Claude** accounts enrolled locally, watches every usage window, and rotates to a spare account the moment the active one runs out — then brings your running CLI sessions back where they left off.
+Windows tray app that keeps several **Codex** 및 **Claude** accounts enrolled locally, watches every usage window, 그리고 rotates to a spare account the moment the active one runs out — then brings your running CLI sessions back where they left off.
 
 <p>
   <a href="#requirements"><img src="https://img.shields.io/badge/OS-Windows-0078D4" alt="OS Windows"></a>
@@ -29,11 +29,11 @@ Windows tray app that keeps several **Codex** and **Claude** accounts enrolled l
 </p>
 
 <sub>
-  <a href="#install">Install</a> ·
+  <a href="#install">install</a> ·
   <a href="#first-run">First run</a> ·
   <a href="#what-a-switch-does">What a switch does</a> ·
   <a href="#cli-session-handover">CLI session handover</a> ·
-  <a href="#settings">Settings</a> ·
+  <a href="#settings">settings</a> ·
   <a href="#command-line">Command line</a> ·
   <a href="#boundaries">Boundaries</a> ·
   <a href="#license-and-attribution">License</a>
@@ -43,7 +43,7 @@ Windows tray app that keeps several **Codex** and **Claude** accounts enrolled l
 
 ---
 
-## Install
+## 설치하기
 
 Download the installer from the [latest release](https://github.com/datell1357/LazySwitch/releases/latest) and run it:
 
