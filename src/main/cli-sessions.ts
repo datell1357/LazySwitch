@@ -316,8 +316,11 @@ function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // EPERM means the process is alive but out of reach — an elevated console,
+    // typically. Only ESRCH means it is really gone. Treating EPERM as "dead"
+    // would report a kill that never happened and skip the forced retry.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
@@ -599,7 +602,10 @@ export async function restartCliSessions(
           cwd = (await existingRawCwd(rollout.cwd)) ?? os.homedir();
         }
       }
-    } else {
+    } else if (session.cwd !== null) {
+      // Without a cwd the transcript cannot be identified: matching on start time
+      // alone reaches across every project and has resumed an unrelated
+      // conversation. Leave those to the user rather than reopening the wrong one.
       const match = await findClaudeSessionForProcess(
         session,
         undefined,
@@ -617,7 +623,13 @@ export async function restartCliSessions(
 
     // Restarting kills any in-flight turn; the resume command restores the
     // conversation transcript, not work that was mid-flight.
-    await terminateProcess(session.pid);
+    if (!(await terminateProcess(session.pid))) {
+      // An elevated CLI cannot be killed by an unelevated app. Reopening the
+      // transcript now would leave two live sessions on the same conversation,
+      // so hand it back to the user, who gets the resume command on the clipboard.
+      counters = recordCliRestartOutcome(counters, "manual");
+      continue;
+    }
     if (session.terminal !== null && (await closeHostTerminal(session.terminal))) {
       counters = { ...counters, closed: counters.closed + 1 };
     }
