@@ -31,6 +31,7 @@ if (process.platform === "win32") app.setAppUserModelId(APP_USER_MODEL_ID);
 let tray: Tray | null = null;
 let cfg: AppConfig = loadConfig();
 let managerWin: BrowserWindow | null = null;
+let onboardingWin: BrowserWindow | null = null;
 
 /** Per-provider runtime state. */
 interface PState {
@@ -249,6 +250,7 @@ function buildMenu(): Menu {
 
   template.push(
     { label: T("tray.manage"), click: () => openManager() },
+    { label: T("tray.tutorial"), click: () => openOnboarding() },
     {
       label: T("tray.autoApprove"),
       type: "checkbox",
@@ -606,6 +608,35 @@ function openManager(): void {
   managerWin.loadFile(rendererPath("manager.html"));
 }
 
+function openOnboarding(): void {
+  if (onboardingWin && !onboardingWin.isDestroyed()) {
+    if (onboardingWin.isMinimized()) onboardingWin.restore();
+    onboardingWin.show();
+    onboardingWin.focus();
+    return;
+  }
+  onboardingWin = new BrowserWindow({
+    width: 640,
+    height: 560,
+    resizable: false,
+    frame: false,
+    title: "LazySwitch",
+    backgroundColor: "#16171b",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+    },
+  });
+  onboardingWin.on("closed", () => (onboardingWin = null));
+  onboardingWin.once("ready-to-show", () => {
+    if (onboardingWin && !onboardingWin.isDestroyed()) {
+      onboardingWin.show();
+      onboardingWin.focus();
+    }
+  });
+  onboardingWin.loadFile(rendererPath("onboarding.html"));
+}
+
 /** Live usage per account slot, so the manager can show every account at once. */
 async function listWithUsage(p: Provider) {
   const st = stateOf(p);
@@ -714,6 +745,13 @@ function registerIpc(): void {
     const result = sessions.length > 0 ? await cliHandover.schedule(p, sessions) : null;
     return { ok: true, sessions: sessions.length, result };
   });
+  ipcMain.handle("onboarding:finish", (_e, openAccounts: boolean) => {
+    cfg.onboarded = true;
+    saveConfig(cfg);
+    onboardingWin?.close();
+    if (openAccounts) openManager();
+    return true;
+  });
   ipcMain.handle("lang:get", () => resolveLang(cfg.language));
   ipcMain.handle("open:url", (_e, url: string) => shell.openExternal(url));
   ipcMain.handle("manager:close", () => managerWin?.close());
@@ -788,10 +826,13 @@ app.whenReady().then(() => {
   ensureLiveEnrolled();
   refreshTray();
   wireMonitors();
-  // First install / not enough accounts to rotate: open the manager window
-  // right away so the user can enroll accounts, instead of hiding in the tray.
+  // First install: walk the user through what LazySwitch does and let them pick
+  // the switch behaviour, ending on "add an account". Afterwards, still surface
+  // the manager whenever there aren't enough accounts to rotate between, rather
+  // than hiding in the tray with nothing to do.
   const total = providers.reduce((n, p) => n + p.listAccounts().length, 0);
-  if (total < 2) openManager();
+  if (!cfg.onboarded) openOnboarding();
+  else if (total < 2) openManager();
   // The tray icon's registry key only exists after it's shown once; give it a
   // moment, then promote it to always-visible (Win11 best-effort).
   setTimeout(() => promoteTrayIcon(), 4000);

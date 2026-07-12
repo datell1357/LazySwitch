@@ -1,0 +1,344 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <style>
+      :root {
+        --bg: #16171b; --card: #1e2026; --line: #2c2f38;
+        --text: #e8e9ec; --muted: #9aa0ac;
+        --accent: #10a37f; --accent-hi: #14c493;
+        --claude: #d97757;
+        --danger: #e5533a;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--bg); color: var(--text);
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        display: flex; flex-direction: column; height: 100vh;
+      }
+      .titlebar {
+        height: 36px; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+        padding: 0 8px 0 12px; background: #101216; border-bottom: 1px solid var(--line);
+        -webkit-app-region: drag; user-select: none;
+      }
+      .tb-title { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--muted); }
+      .tb-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
+      .tb-close {
+        -webkit-app-region: no-drag; width: 30px; height: 24px; padding: 0;
+        border: none; background: transparent; color: var(--muted);
+        font-size: 13px; border-radius: 6px; cursor: pointer; line-height: 1;
+      }
+      .tb-close:hover { background: var(--danger); color: #fff; }
+
+      .stage { flex: 1 1 auto; overflow-y: auto; padding: 26px 34px 10px; }
+      h1 { margin: 0 0 8px; font-size: 22px; font-weight: 800; letter-spacing: -.2px; }
+      .lead { margin: 0 0 18px; font-size: 13px; line-height: 1.65; color: var(--muted); }
+      .lead b { color: var(--text); font-weight: 700; }
+
+      .points { display: grid; gap: 10px; margin: 0 0 4px; }
+      .point {
+        display: grid; grid-template-columns: 26px 1fr; gap: 10px; align-items: start;
+        background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+      }
+      .point .n {
+        width: 22px; height: 22px; border-radius: 50%; background: #2a2d36; color: var(--accent-hi);
+        font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center;
+      }
+      .point .t { display: block; font-size: 13px; font-weight: 700; margin-bottom: 3px; }
+      .point .d { display: block; font-size: 12px; line-height: 1.6; color: var(--muted); }
+      .point code {
+        background: #101216; border: 1px solid var(--line); border-radius: 4px;
+        padding: 1px 5px; font-size: 11px; color: #cfd3da;
+      }
+
+      .opt {
+        display: flex; align-items: flex-start; gap: 12px;
+        background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+        padding: 12px 14px; margin-bottom: 10px; cursor: pointer;
+      }
+      .opt:hover { border-color: #3a3f4c; }
+      .opt input { margin: 2px 0 0; width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+      .opt .t { display: block; font-size: 13px; font-weight: 700; }
+      .opt .d { display: block; font-size: 12px; line-height: 1.55; color: var(--muted); margin-top: 3px; }
+      .opt .tag {
+        display: inline-block; margin-left: 6px; padding: 2px 6px; border-radius: 999px;
+        font-size: 10px; font-weight: 800; background: #2a2d36; color: var(--muted);
+      }
+      .opt .tag.codex { background: #173f35; color: #b7ead8; }
+      .opt .tag.claude { background: #3a241c; color: #f0c0a8; }
+
+      .field { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+      .field label { font-size: 12px; color: var(--muted); min-width: 76px; }
+      select {
+        background: var(--card); color: var(--text); border: 1px solid var(--line);
+        border-radius: 8px; padding: 7px 10px; font-size: 12px; font-family: inherit;
+      }
+
+      .done { text-align: center; padding: 26px 0 10px; }
+      .done .mark {
+        width: 56px; height: 56px; margin: 0 auto 16px; border-radius: 50%;
+        background: #173f35; border: 1px solid #2a8d70; color: var(--accent-hi);
+        display: flex; align-items: center; justify-content: center; font-size: 26px; font-weight: 800;
+      }
+      .done h1 { font-size: 21px; }
+      .done .lead { max-width: 420px; margin: 0 auto; }
+
+      .foot {
+        flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+        gap: 10px; padding: 12px 20px 16px; border-top: 1px solid var(--line); background: #101216;
+      }
+      .dots { display: flex; gap: 6px; }
+      .dot { width: 7px; height: 7px; border-radius: 50%; background: #2c2f38; }
+      .dot.on { background: var(--accent); }
+      .btns { display: flex; gap: 8px; }
+      button {
+        border: 1px solid var(--line); background: var(--card); color: var(--text);
+        border-radius: 8px; padding: 8px 14px; font-size: 12px; font-weight: 600;
+        cursor: pointer; white-space: nowrap;
+      }
+      button:hover { background: #2a2d36; border-color: #3a3f4c; }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      button.primary:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
+      button.ghost { background: transparent; color: var(--muted); border-color: transparent; }
+      button.ghost:hover { background: #2a2d36; color: var(--text); }
+      button:disabled { opacity: .45; cursor: default; }
+    </style>
+  </head>
+  <body>
+    <div class="titlebar">
+      <div class="tb-title"><span class="tb-dot"></span><span>LazySwitch</span></div>
+      <button class="tb-close" id="close">✕</button>
+    </div>
+
+    <div class="stage" id="stage"></div>
+
+    <div class="foot">
+      <div class="dots" id="dots"></div>
+      <div class="btns">
+        <button class="ghost" id="skip"></button>
+        <button id="back"></button>
+        <button class="primary" id="next"></button>
+      </div>
+    </div>
+
+    <script>
+      const STR = {
+        en: {
+          skip: "Skip", back: "Back", next: "Next", finish: "Add an account",
+          s1t: "Welcome to LazySwitch",
+          s1l: "Keep several <b>Codex</b> and <b>Claude</b> accounts enrolled, and let the next one take over the moment the active one runs out of usage.",
+          s1a: "Enroll", s1ad: "Log in the normal way (<code>codex login</code>, <code>claude</code>), then enroll that login under a name. Repeat per account. LazySwitch never asks for a password.",
+          s1b: "Watch", s1bd: "Each account's 5-hour and weekly windows are read from the provider's own usage data.",
+          s1c: "Rotate", s1cd: "When the active account is nearly spent, its auth is swapped for the next enabled one — the CLI and Desktop both pick it up.",
+          s2t: "Keep your CLI sessions",
+          s2l: "A switch invalidates the token every running CLI is holding. LazySwitch can hand each session over: kill it, close its terminal, and reopen it in a fresh terminal on <b>its own</b> resume command.",
+          s2note: "In-flight work is lost — resume restores the conversation, not the turn that was running. Leave these off if you would rather restart sessions yourself.",
+          optCodexCli: "Restart Codex CLI sessions on a switch",
+          optCodexCliD: "Every running <code>codex</code> on this machine reopens with <code>codex resume</code>.",
+          optClaudeCli: "Restart Claude CLI sessions on a switch",
+          optClaudeCliD: "Every running <code>claude</code> reopens with <code>claude --resume</code>.",
+          s3t: "A few preferences",
+          s3l: "All of these can be changed later from the tray menu.",
+          optDesktop: "Auto-restart Codex Desktop on a switch",
+          optDesktopD: "Desktop caches the old token in memory, so it needs a restart to see the new account. Leave this off to be asked each time.",
+          optLogin: "Start LazySwitch at login",
+          optLoginD: "Starts hidden in the tray.",
+          lang: "Language", langSystem: "System default",
+          s4t: "Add an account!",
+          s4l: "You are set up. Enroll your first account, then a second one — rotation needs somewhere to go.",
+        },
+        ko: {
+          skip: "건너뛰기", back: "이전", next: "다음", finish: "계정 추가하기",
+          s1t: "LazySwitch에 오신 걸 환영합니다",
+          s1l: "<b>Codex</b>와 <b>Claude</b> 계정을 여러 개 등록해두면, 사용 중인 계정이 소진되는 순간 다음 계정이 이어받습니다.",
+          s1a: "등록", s1ad: "평소처럼 로그인한 뒤(<code>codex login</code>, <code>claude</code>) 그 로그인에 이름을 붙여 등록합니다. 계정마다 반복하면 됩니다. 비밀번호는 묻지 않습니다.",
+          s1b: "감시", s1bd: "각 계정의 5시간·주간 사용량 창을 프로바이더가 제공하는 데이터에서 읽습니다.",
+          s1c: "전환", s1cd: "활성 계정이 거의 다 쓰이면 다음 활성 계정의 인증으로 교체합니다. CLI와 데스크톱이 함께 반영됩니다.",
+          s2t: "CLI 세션 이어가기",
+          s2l: "전환하면 실행 중인 모든 CLI의 토큰이 무효화됩니다. LazySwitch가 세션을 인계할 수 있습니다 — 종료하고, 터미널을 닫고, <b>각자의</b> 재개 명령으로 새 터미널에서 다시 엽니다.",
+          s2note: "진행 중이던 작업은 사라집니다. 재개는 대화 기록을 되살릴 뿐, 실행 중이던 턴은 복구하지 못합니다. 직접 재시작하고 싶다면 꺼두세요.",
+          optCodexCli: "전환 시 Codex CLI 세션 재시작",
+          optCodexCliD: "이 PC에서 실행 중인 모든 <code>codex</code>가 <code>codex resume</code>으로 다시 열립니다.",
+          optClaudeCli: "전환 시 Claude CLI 세션 재시작",
+          optClaudeCliD: "실행 중인 모든 <code>claude</code>가 <code>claude --resume</code>으로 다시 열립니다.",
+          s3t: "몇 가지 설정",
+          s3l: "모두 나중에 트레이 메뉴에서 바꿀 수 있습니다.",
+          optDesktop: "전환 시 Codex 데스크톱 자동 재시작",
+          optDesktopD: "데스크톱은 옛 토큰을 메모리에 캐시하므로 재시작해야 새 계정을 인식합니다. 꺼두면 그때마다 물어봅니다.",
+          optLogin: "로그인 시 LazySwitch 자동 시작",
+          optLoginD: "트레이에 숨겨진 상태로 시작합니다.",
+          lang: "언어", langSystem: "시스템 기본값",
+          s4t: "계정을 추가해보세요!",
+          s4l: "준비가 끝났습니다. 첫 계정을 등록하고, 두 번째 계정도 등록하세요. 전환이 갈 곳이 있어야 합니다.",
+        },
+        ja: {
+          skip: "スキップ", back: "戻る", next: "次へ", finish: "アカウントを追加",
+          s1t: "LazySwitch へようこそ",
+          s1l: "<b>Codex</b> と <b>Claude</b> のアカウントを複数登録しておくと、使用中のアカウントが尽きた瞬間に次のアカウントが引き継ぎます。",
+          s1a: "登録", s1ad: "いつも通りログインし(<code>codex login</code>、<code>claude</code>)、そのログインに名前を付けて登録します。パスワードは尋ねません。",
+          s1b: "監視", s1bd: "各アカウントの5時間・週間ウィンドウをプロバイダーの使用状況データから読み取ります。",
+          s1c: "切替", s1cd: "使用中のアカウントが尽きかけると、次の有効なアカウントの認証に入れ替えます。CLI とデスクトップの両方に反映されます。",
+          s2t: "CLI セッションを引き継ぐ",
+          s2l: "切り替えると実行中のすべての CLI のトークンが無効になります。LazySwitch がセッションを引き継げます — 終了し、ターミナルを閉じ、<b>それぞれの</b>再開コマンドで新しいターミナルを開きます。",
+          s2note: "実行中だった作業は失われます。再開は会話履歴を復元するだけで、実行中のターンは戻せません。自分で再起動したい場合はオフのままにしてください。",
+          optCodexCli: "切替時に Codex CLI セッションを再起動",
+          optCodexCliD: "実行中のすべての <code>codex</code> が <code>codex resume</code> で再度開きます。",
+          optClaudeCli: "切替時に Claude CLI セッションを再起動",
+          optClaudeCliD: "実行中のすべての <code>claude</code> が <code>claude --resume</code> で再度開きます。",
+          s3t: "いくつかの設定",
+          s3l: "すべて後からトレイメニューで変更できます。",
+          optDesktop: "切替時に Codex デスクトップを自動再起動",
+          optDesktopD: "デスクトップは古いトークンをメモリにキャッシュするため、再起動が必要です。オフにすると毎回確認します。",
+          optLogin: "ログイン時に LazySwitch を起動",
+          optLoginD: "トレイに隠れた状態で起動します。",
+          lang: "言語", langSystem: "システム既定",
+          s4t: "アカウントを追加しましょう！",
+          s4l: "準備完了です。最初のアカウントを登録し、2つ目も登録してください。切り替え先が必要です。",
+        },
+        zh: {
+          skip: "跳过", back: "上一步", next: "下一步", finish: "添加账号",
+          s1t: "欢迎使用 LazySwitch",
+          s1l: "注册多个 <b>Codex</b> 和 <b>Claude</b> 账号，当前账号用尽时下一个立即接手。",
+          s1a: "注册", s1ad: "照常登录(<code>codex login</code>、<code>claude</code>)，然后给该登录起个名字并注册。不会询问密码。",
+          s1b: "监控", s1bd: "从各服务商自己的用量数据读取每个账号的 5 小时与每周窗口。",
+          s1c: "切换", s1cd: "当前账号即将用尽时，替换为下一个已启用账号的认证，CLI 与桌面版同时生效。",
+          s2t: "延续 CLI 会话",
+          s2l: "切换会使所有运行中 CLI 持有的令牌失效。LazySwitch 可以接管每个会话 — 结束它、关闭终端，并在新终端中用<b>各自的</b>恢复命令重新打开。",
+          s2note: "进行中的工作会丢失。恢复只还原对话记录，无法还原正在执行的回合。若想自行重启，请保持关闭。",
+          optCodexCli: "切换时重启 Codex CLI 会话",
+          optCodexCliD: "本机所有运行中的 <code>codex</code> 将以 <code>codex resume</code> 重新打开。",
+          optClaudeCli: "切换时重启 Claude CLI 会话",
+          optClaudeCliD: "所有运行中的 <code>claude</code> 将以 <code>claude --resume</code> 重新打开。",
+          s3t: "一些偏好设置",
+          s3l: "以上都可以稍后在托盘菜单中修改。",
+          optDesktop: "切换时自动重启 Codex 桌面版",
+          optDesktopD: "桌面版会在内存中缓存旧令牌，需要重启才能识别新账号。关闭则每次询问。",
+          optLogin: "开机时启动 LazySwitch",
+          optLoginD: "以隐藏方式启动到托盘。",
+          lang: "语言", langSystem: "系统默认",
+          s4t: "来添加一个账号吧！",
+          s4l: "设置完成。先注册第一个账号，再注册第二个 — 轮换需要有去处。",
+        },
+      };
+
+      let M = STR.en;
+      let cfg = null;
+      let step = 0;
+      const STEPS = 4;
+
+      const $ = (id) => document.getElementById(id);
+
+      function optionRow(id, checked, title, desc, tag) {
+        const chip = tag ? `<span class="tag ${tag}">${tag === "codex" ? "Codex" : "Claude"}</span>` : "";
+        return `<label class="opt">
+          <input type="checkbox" id="${id}" ${checked ? "checked" : ""} />
+          <span>
+            <span class="t">${title}${chip}</span>
+            <span class="d">${desc}</span>
+          </span>
+        </label>`;
+      }
+
+      function render() {
+        const s = $("stage");
+        if (step === 0) {
+          s.innerHTML = `
+            <h1>${M.s1t}</h1>
+            <p class="lead">${M.s1l}</p>
+            <div class="points">
+              <div class="point"><span class="n">1</span><span><span class="t">${M.s1a}</span><span class="d">${M.s1ad}</span></span></div>
+              <div class="point"><span class="n">2</span><span><span class="t">${M.s1b}</span><span class="d">${M.s1bd}</span></span></div>
+              <div class="point"><span class="n">3</span><span><span class="t">${M.s1c}</span><span class="d">${M.s1cd}</span></span></div>
+            </div>`;
+        } else if (step === 1) {
+          s.innerHTML = `
+            <h1>${M.s2t}</h1>
+            <p class="lead">${M.s2l}</p>
+            ${optionRow("codexCli", cfg.codex.autoRestartCli, M.optCodexCli, M.optCodexCliD, "codex")}
+            ${optionRow("claudeCli", cfg.claude.autoRestartCli, M.optClaudeCli, M.optClaudeCliD, "claude")}
+            <p class="lead" style="margin-top:14px">${M.s2note}</p>`;
+          $("codexCli").onchange = (e) => (cfg.codex.autoRestartCli = e.target.checked);
+          $("claudeCli").onchange = (e) => (cfg.claude.autoRestartCli = e.target.checked);
+        } else if (step === 2) {
+          const langs = [["", M.langSystem], ["ko", "한국어"], ["en", "English"], ["ja", "日本語"], ["zh", "中文"]];
+          s.innerHTML = `
+            <h1>${M.s3t}</h1>
+            <p class="lead">${M.s3l}</p>
+            ${optionRow("desktop", cfg.codex.autoApprove, M.optDesktop, M.optDesktopD, "codex")}
+            ${optionRow("login", cfg.launchAtLogin, M.optLogin, M.optLoginD, null)}
+            <div class="field">
+              <label for="lang">${M.lang}</label>
+              <select id="lang">
+                ${langs.map(([v, t]) => `<option value="${v}" ${cfg.language === v ? "selected" : ""}>${t}</option>`).join("")}
+              </select>
+            </div>`;
+          $("desktop").onchange = (e) => (cfg.codex.autoApprove = e.target.checked);
+          $("login").onchange = (e) => (cfg.launchAtLogin = e.target.checked);
+          $("lang").onchange = async (e) => {
+            cfg.language = e.target.value;
+            await window.rotator.setConfig({ language: cfg.language });
+            M = STR[await window.rotator.getLang()] || STR.en;
+            render();
+          };
+        } else {
+          s.innerHTML = `
+            <div class="done">
+              <div class="mark">✓</div>
+              <h1>${M.s4t}</h1>
+              <p class="lead">${M.s4l}</p>
+            </div>`;
+        }
+
+        $("dots").innerHTML = Array.from(
+          { length: STEPS },
+          (_, i) => `<span class="dot ${i === step ? "on" : ""}"></span>`
+        ).join("");
+        $("skip").textContent = M.skip;
+        $("back").textContent = M.back;
+        $("next").textContent = step === STEPS - 1 ? M.finish : M.next;
+        $("back").disabled = step === 0;
+        $("skip").style.visibility = step === STEPS - 1 ? "hidden" : "visible";
+      }
+
+      async function save() {
+        await window.rotator.setConfig({
+          language: cfg.language,
+          launchAtLogin: cfg.launchAtLogin,
+          codex: { autoRestartCli: cfg.codex.autoRestartCli, autoApprove: cfg.codex.autoApprove },
+          claude: { autoRestartCli: cfg.claude.autoRestartCli },
+        });
+      }
+
+      async function finish(openAccounts) {
+        await save();
+        await window.rotator.finishOnboarding(openAccounts);
+      }
+
+      $("next").onclick = async () => {
+        if (step < STEPS - 1) {
+          await save();
+          step += 1;
+          render();
+          return;
+        }
+        await finish(true);
+      };
+      $("back").onclick = () => {
+        if (step > 0) step -= 1;
+        render();
+      };
+      $("skip").onclick = () => finish(false);
+      $("close").onclick = () => finish(false);
+
+      (async () => {
+        cfg = await window.rotator.getConfig();
+        M = STR[await window.rotator.getLang()] || STR.en;
+        render();
+      })();
+    </script>
+  </body>
+</html>

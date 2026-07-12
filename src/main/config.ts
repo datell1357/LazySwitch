@@ -10,6 +10,8 @@ export interface AppConfig {
   language: string;
   /** Launch automatically at OS login (registered on first run). */
   launchAtLogin: boolean;
+  /** The first-run tutorial has been completed; do not open it again. */
+  onboarded: boolean;
   codex: ProviderPrefs;
   claude: ProviderPrefs;
 }
@@ -39,6 +41,7 @@ const CLAUDE_DEFAULTS: ProviderPrefs = {
 const DEFAULTS: AppConfig = {
   language: "",
   launchAtLogin: true,
+  onboarded: false,
   codex: CODEX_DEFAULTS,
   claude: CLAUDE_DEFAULTS,
 };
@@ -60,6 +63,9 @@ function migrate(raw: any): Partial<AppConfig> {
   const out: any = {};
   if (typeof raw.language === "string") out.language = raw.language;
   if (typeof raw.launchAtLogin === "boolean") out.launchAtLogin = raw.launchAtLogin;
+  // An existing config predates the tutorial, so its owner has already set the
+  // app up by hand — don't greet them with a first-run wizard on upgrade.
+  out.onboarded = typeof raw.onboarded === "boolean" ? raw.onboarded : true;
 
   // New shape takes precedence; otherwise lift legacy flat keys into codex.
   const legacyCodex: any = {};

@@ -32,6 +32,10 @@ contextBridge.exposeInMainWorld("rotator", {
   getLang: () => ipcRenderer.invoke("lang:get"),
   setConfig: (patch: unknown) => ipcRenderer.invoke("config:set", patch),
 
+  // First-run tutorial
+  finishOnboarding: (openAccounts: boolean) =>
+    ipcRenderer.invoke("onboarding:finish", openAccounts),
+
   // Push updates from main → renderer (e.g. after an auto-switch)
   onChanged: (cb: () => void) => ipcRenderer.on("accounts:changed", () => cb()),
   onLoginUrl: (cb: (url: string) => void) =>
