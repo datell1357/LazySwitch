@@ -38,7 +38,10 @@ async fn dump(label: &str, provider: &dyn Provider) {
                 pct(&usage.secondary),
                 pct(&usage.fable),
             ),
-            None => println!("   {:<14} enabled={} usage=none", account.name, account.enabled),
+            None => println!(
+                "   {:<14} enabled={} usage=none",
+                account.name, account.enabled
+            ),
         }
     }
 }

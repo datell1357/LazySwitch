@@ -3,7 +3,14 @@
   "identifier": "default",
   "description": "enables the default permissions",
   "windows": [
-    "main"
+    "manager",
+    "onboarding",
+    "widget",
+    "widget-settings",
+    "approval",
+    "cli-restart",
+    "notify",
+    "notify-*"
   ],
   "permissions": [
     "core:default"
