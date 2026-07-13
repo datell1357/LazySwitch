@@ -17,6 +17,7 @@
         --compact-bg: var(--bg); --compact-text: var(--text); --compact-track: #343b4a;
         --compact-track-edge: #454d5f;
         --compact-green: var(--gauge-green); --compact-amber: var(--gauge-amber); --compact-red: var(--gauge-red);
+        --compact-text-shadow: 0 1px 2px rgba(0, 0, 0, .8);
       }
       * { box-sizing: border-box; }
       ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -32,7 +33,11 @@
       body.taskbar-light {
         --compact-text: #202124; --compact-track: #d0d3d8; --compact-track-edge: #b2b6bd;
         --compact-green: #167642; --compact-amber: #8a5b00; --compact-red: #b3261e;
+        --compact-text-shadow: 0 1px 2px rgba(255, 255, 255, .75);
       }
+      html.taskbar-transparent, html.taskbar-transparent body { background: transparent; }
+      html.taskbar-transparent body.compact,
+      html.taskbar-transparent .list.compact { background: transparent; border: none; box-shadow: none; }
       .titlebar {
         height: 30px; display: flex; align-items: center; justify-content: space-between;
         padding: 0 6px 0 10px; background: #101216; border-bottom: 1px solid var(--line);
@@ -67,7 +72,7 @@
       }
       .compact-line {
         min-width: 0; min-height: 14px; display: flex; align-items: center; gap: 5px;
-        font-size: 10px; line-height: 14px; color: var(--compact-text);
+        font-size: 10px; line-height: 14px; color: var(--compact-text); text-shadow: var(--compact-text-shadow);
       }
       .compact-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .compact-usage { display: flex; align-items: center; flex: 0 0 69px; gap: 2px; min-width: 0; }
@@ -187,12 +192,11 @@
 
       function applyTaskbarTheme(theme) {
         const root = document.documentElement;
+        root.classList.toggle("taskbar-transparent", theme !== null);
         if (!theme) {
-          root.style.removeProperty("--compact-bg");
           document.body.classList.remove("taskbar-light");
           return;
         }
-        root.style.setProperty("--compact-bg", theme.background);
         document.body.classList.toggle("taskbar-light", theme.light === true);
       }
 
@@ -473,6 +477,7 @@
             ? config.usageWidget.compactPosition
             : "taskbar";
           minimized = config?.usageWidget?.minimized === true;
+          document.documentElement.classList.toggle("taskbar-transparent", minimized && compactPosition === "taskbar");
           document.body.classList.toggle("compact", minimized);
           $("tbMinimize").textContent = minimized ? "▢" : "–";
           $("tbMinimize").setAttribute("aria-label", minimized ? M.restore : M.minimize);

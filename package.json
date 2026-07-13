@@ -47,6 +47,7 @@
     "mac": {
       "target": "dmg",
       "category": "public.app-category.developer-tools"
-    }
+    },
+    "afterPack": "build/trim-locales.js"
   }
 }

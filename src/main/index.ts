@@ -38,8 +38,8 @@ let cfg: AppConfig = loadConfig();
 let managerWin: BrowserWindow | null = null;
 let onboardingWin: BrowserWindow | null = null;
 let widgetWin: BrowserWindow | null = null;
+let widgetIsTransparent: boolean | null = null;
 let widgetSettingsWin: BrowserWindow | null = null;
-let openingUsageWidget: Promise<void> | null = null;
 
 /** Per-provider runtime state. */
 interface PState {
@@ -706,7 +706,6 @@ interface PhysicalRect {
 let cachedTrayNotifyRect: PhysicalRect | null = null;
 
 interface WidgetTaskbarTheme {
-  background: string;
   light: boolean;
 }
 
@@ -819,7 +818,6 @@ function readTaskbarTheme(value: unknown): WidgetTaskbarTheme | null {
     green = 0x20;
     blue = 0x20;
   }
-  const background = `#${[red, green, blue].map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
   const luminance = [red, green, blue].map((channel) => {
     const normalized = channel / 255;
     return normalized <= 0.03928
@@ -827,7 +825,7 @@ function readTaskbarTheme(value: unknown): WidgetTaskbarTheme | null {
       : Math.pow((normalized + 0.055) / 1.055, 2.4);
   });
   const relativeLuminance = 0.2126 * luminance[0] + 0.7152 * luminance[1] + 0.0722 * luminance[2];
-  return { background, light: relativeLuminance > 0.5 };
+  return { light: relativeLuminance > 0.5 };
 }
 
 function queryTaskbarTheme(): Promise<WidgetTaskbarTheme | null> {
@@ -871,7 +869,6 @@ function isTaskbarCompactWidget(): boolean {
 
 function sendWidgetTaskbarTheme(theme: WidgetTaskbarTheme | null): void {
   if (!widgetWin || widgetWin.isDestroyed()) return;
-  widgetWin.setBackgroundColor(theme?.background ?? DEFAULT_WIDGET_BACKGROUND);
   widgetWin.webContents.send("widget:taskbar-theme", theme);
 }
 
@@ -882,7 +879,7 @@ function applyWidgetTaskbarTheme(): void {
     return;
   }
   void getTaskbarTheme().then((theme) => {
-    if (isTaskbarCompactWidget()) sendWidgetTaskbarTheme(theme);
+    if (isTaskbarCompactWidget()) sendWidgetTaskbarTheme(theme ?? { light: false });
   });
 }
 
@@ -1103,18 +1100,18 @@ function openWidgetSettings(): void {
 
 function openUsageWidget(): void {
   if (widgetWin && !widgetWin.isDestroyed()) {
+    if (widgetIsTransparent !== isTaskbarCompactWidget()) {
+      recreateUsageWidget();
+      return;
+    }
     widgetWin.show();
     applyWidgetTaskbarTheme();
     return;
   }
-  if (openingUsageWidget) return;
-  openingUsageWidget = openUsageWidgetWindow().finally(() => {
-    openingUsageWidget = null;
-  });
+  openUsageWidgetWindow();
 }
 
-async function openUsageWidgetWindow(): Promise<void> {
-  const initialTheme = isTaskbarCompactWidget() ? await getTaskbarTheme() : null;
+function openUsageWidgetWindow(compactHeight = WIDGET_COMPACT_DEFAULT_HEIGHT): void {
   if (!cfg.usageWidget.enabled || !hasEnrolledAccounts() || isOnboarding()) return;
   if (widgetWin && !widgetWin.isDestroyed()) {
     widgetWin.show();
@@ -1122,10 +1119,8 @@ async function openUsageWidgetWindow(): Promise<void> {
   }
   const normalBounds = widgetDefaultBounds();
   const initialBounds = cfg.usageWidget.minimized ? widgetInitialCompactBounds() : normalBounds;
-  const initialBackground = isTaskbarCompactWidget()
-    ? initialTheme?.background ?? DEFAULT_WIDGET_BACKGROUND
-    : DEFAULT_WIDGET_BACKGROUND;
-  widgetWin = new BrowserWindow({
+  const transparent = isTaskbarCompactWidget();
+  const win = new BrowserWindow({
     ...initialBounds,
     minWidth: cfg.usageWidget.minimized ? WIDGET_COMPACT_WIDTH : WIDGET_MIN_WIDTH,
     minHeight: cfg.usageWidget.minimized ? WIDGET_COMPACT_MIN_HEIGHT : WIDGET_MIN_HEIGHT,
@@ -1138,24 +1133,28 @@ async function openUsageWidgetWindow(): Promise<void> {
     maximizable: false,
     fullscreenable: false,
     title: "LazySwitch Usage",
-    backgroundColor: initialBackground,
+    // Transparency is construction-time only, so state changes recreate this window.
+    transparent,
+    backgroundColor: transparent ? "#00000000" : DEFAULT_WIDGET_BACKGROUND,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
     },
   });
-  widgetWin.setAlwaysOnTop(cfg.usageWidget.alwaysOnTop, "screen-saver");
+  widgetWin = win;
+  widgetIsTransparent = transparent;
+  win.setAlwaysOnTop(cfg.usageWidget.alwaysOnTop, "screen-saver");
   const reassertWidgetAlwaysOnTop = () => {
-    if (!widgetWin || widgetWin.isDestroyed() || !cfg.usageWidget.alwaysOnTop) return;
+    if (widgetWin !== win || win.isDestroyed() || !cfg.usageWidget.alwaysOnTop) return;
     // A plain re-set is a no-op while the topmost flag is already on, and the
     // taskbar re-enters the topmost band above us every time it is clicked.
     // Dropping and re-adding the flag re-inserts this window at the top.
-    widgetWin.setAlwaysOnTop(false);
-    widgetWin.setAlwaysOnTop(true, "screen-saver");
-    widgetWin.moveTop();
+    win.setAlwaysOnTop(false);
+    win.setAlwaysOnTop(true, "screen-saver");
+    win.moveTop();
   };
-  widgetWin.on("blur", reassertWidgetAlwaysOnTop);
-  widgetWin.on("show", reassertWidgetAlwaysOnTop);
+  win.on("blur", reassertWidgetAlwaysOnTop);
+  win.on("show", reassertWidgetAlwaysOnTop);
   // The taskbar is itself topmost and jumps above the widget whenever it is
   // clicked; no window event fires on the unfocused widget when that happens,
   // so keep re-raising on a timer. Only the taskbar-pinned compact widget
@@ -1166,34 +1165,58 @@ async function openUsageWidgetWindow(): Promise<void> {
     if (widgetContextMenuOpen) return;
     reassertWidgetAlwaysOnTop();
   }, 100);
-  widgetWin.on("closed", () => clearInterval(topmostTimer));
-  widgetWin.on("moved", scheduleSaveWidgetBounds);
-  widgetWin.on("resized", scheduleSaveWidgetBounds);
-  widgetWin.webContents.on("context-menu", (event) => {
+  win.on("closed", () => clearInterval(topmostTimer));
+  win.on("moved", scheduleSaveWidgetBounds);
+  win.on("resized", scheduleSaveWidgetBounds);
+  win.webContents.on("context-menu", (event) => {
     if (!cfg.usageWidget.minimized) return;
     event.preventDefault();
     showWidgetContextMenu();
   });
-  widgetWin.on("close", () => setWidgetContextMenuHooked(false));
-  widgetWin.on("closed", () => {
-    setWidgetContextMenuHooked(false);
-    widgetWin = null;
+  win.on("close", () => {
+    if (widgetWin === win) setWidgetContextMenuHooked(false);
+  });
+  win.on("closed", () => {
+    if (widgetWin === win) {
+      setWidgetContextMenuHooked(false);
+      widgetWin = null;
+      widgetIsTransparent = null;
+    }
   });
   setWidgetContextMenuHooked(cfg.usageWidget.minimized);
   // Chromium persists per-origin zoom (file://) in the profile, so an
   // accidental Ctrl+wheel / Ctrl+- permanently shrinks every widget load.
-  widgetWin.webContents.on("did-finish-load", () => {
-    if (!widgetWin || widgetWin.isDestroyed()) return;
-    widgetWin.webContents.setZoomFactor(1);
-    void widgetWin.webContents.setVisualZoomLevelLimits(1, 1);
+  win.webContents.on("did-finish-load", () => {
+    if (widgetWin !== win || win.isDestroyed()) return;
+    win.webContents.setZoomFactor(1);
+    void win.webContents.setVisualZoomLevelLimits(1, 1);
     applyWidgetTaskbarTheme();
   });
-  widgetWin.loadFile(rendererPath("widget.html"));
-  if (cfg.usageWidget.minimized) void applyWidgetMinimized(true);
+  win.loadFile(rendererPath("widget.html"));
+  if (cfg.usageWidget.minimized) applyWidgetMinimized(true, compactHeight);
+}
+
+function recreateUsageWidget(compactHeight = WIDGET_COMPACT_DEFAULT_HEIGHT): void {
+  if (widgetIsTransparent === isTaskbarCompactWidget()) return;
+  if (!widgetWin || widgetWin.isDestroyed()) {
+    openUsageWidgetWindow(compactHeight);
+    return;
+  }
+  const oldWin = widgetWin;
+  setWidgetContextMenuHooked(false);
+  widgetContextMenuOpen = false;
+  widgetWin = null;
+  widgetIsTransparent = null;
+  oldWin.destroy();
+  openUsageWidgetWindow(compactHeight);
 }
 
 function applyWidgetMinimized(minimized: boolean, compactHeight = WIDGET_COMPACT_DEFAULT_HEIGHT): void {
   if (!widgetWin || widgetWin.isDestroyed()) return;
+  if (widgetIsTransparent !== isTaskbarCompactWidget()) {
+    recreateUsageWidget(compactHeight);
+    return;
+  }
   if (minimized) {
     applyWidgetTaskbarTheme();
     setWidgetContextMenuHooked(true);
@@ -1418,8 +1441,7 @@ function registerIpc(): void {
     if (typeof widgetPatch?.minimized === "boolean" && widgetPatch.minimized !== previousMinimized) {
       applyWidgetMinimized(widgetPatch.minimized);
     } else if (isCompactPosition(widgetPatch?.compactPosition) && widgetPatch.compactPosition !== previousCompactPosition && cfg.usageWidget.minimized) {
-      applyWidgetTaskbarTheme();
-      void positionCompactWidget(widgetWin?.getBounds().height ?? WIDGET_COMPACT_DEFAULT_HEIGHT);
+      applyWidgetMinimized(true, widgetWin?.getBounds().height ?? WIDGET_COMPACT_DEFAULT_HEIGHT);
     }
     if (patch && "launchAtLogin" in patch) applyLaunchAtLogin();
     if (patch && (patch.codex?.pollIntervalSec != null || patch.claude?.pollIntervalSec != null)) {

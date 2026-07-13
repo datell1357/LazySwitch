@@ -39,8 +39,8 @@ contextBridge.exposeInMainWorld("rotator", {
 
   // Push updates from main → renderer (e.g. after an auto-switch)
   onChanged: (cb: () => void) => ipcRenderer.on("accounts:changed", () => cb()),
-  onWidgetTaskbarTheme: (cb: (theme: { background: string; light: boolean } | null) => void) =>
-    ipcRenderer.on("widget:taskbar-theme", (_e, theme: { background: string; light: boolean } | null) => cb(theme)),
+  onWidgetTaskbarTheme: (cb: (theme: { light: boolean } | null) => void) =>
+    ipcRenderer.on("widget:taskbar-theme", (_e, theme: { light: boolean } | null) => cb(theme)),
   onLoginUrl: (cb: (url: string) => void) =>
     ipcRenderer.on("login:url", (_e, url: string) => cb(url)),
   openUrl: (url: string) => ipcRenderer.invoke("open:url", url),
