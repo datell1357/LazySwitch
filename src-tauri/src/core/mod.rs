@@ -58,7 +58,7 @@ pub(crate) fn read_json(path: &std::path::Path) -> Option<serde_json::Value> {
     serde_json::from_slice(&bytes).ok()
 }
 
-pub(crate) fn user_home() -> PathBuf {
+pub fn user_home() -> PathBuf {
     #[cfg(windows)]
     {
         std::env::var_os("USERPROFILE")
