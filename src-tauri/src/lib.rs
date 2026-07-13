@@ -1,3 +1,7 @@
+#![allow(linker_messages)]
+
+pub mod core;
+
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 /// Scaffold probe: the renderer reports what it loaded, so the port can be
