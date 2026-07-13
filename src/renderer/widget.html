@@ -14,6 +14,9 @@
         --claude: #d97757;
         --gauge-green: #3ecf6a; --gauge-amber: #e8b13f; --gauge-red: #e5534b;
         --active-ring: #c66a3d;
+        --compact-bg: var(--bg); --compact-text: var(--text); --compact-track: #343b4a;
+        --compact-track-edge: #454d5f;
+        --compact-green: var(--gauge-green); --compact-amber: var(--gauge-amber); --compact-red: var(--gauge-red);
       }
       * { box-sizing: border-box; }
       ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -24,6 +27,11 @@
         background: var(--bg); color: var(--text);
         font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
         overflow: hidden;
+      }
+      body.compact { background: var(--compact-bg); color: var(--compact-text); }
+      body.taskbar-light {
+        --compact-text: #202124; --compact-track: #d0d3d8; --compact-track-edge: #b2b6bd;
+        --compact-green: #167642; --compact-amber: #8a5b00; --compact-red: #b3261e;
       }
       .titlebar {
         height: 30px; display: flex; align-items: center; justify-content: space-between;
@@ -59,21 +67,21 @@
       }
       .compact-line {
         min-width: 0; min-height: 14px; display: flex; align-items: center; gap: 5px;
-        font-size: 10px; line-height: 14px;
+        font-size: 10px; line-height: 14px; color: var(--compact-text);
       }
       .compact-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .compact-usage { display: flex; align-items: center; flex: 0 0 69px; gap: 2px; min-width: 0; }
       .gauge.compact-gauge {
         flex: 0 0 46px; height: 6px;
-        background: #343b4a; box-shadow: 0 0 0 1px #454d5f inset;
+        background: var(--compact-track); box-shadow: 0 0 0 1px var(--compact-track-edge) inset;
       }
       .compact-pct { font-size: 9px; font-weight: 800; white-space: nowrap; }
-      .compact-usage[data-tone="green"] .compact-pct { color: var(--gauge-green); }
-      .compact-usage[data-tone="amber"] .compact-pct { color: var(--gauge-amber); }
-      .compact-usage[data-tone="red"] .compact-pct { color: var(--gauge-red); }
-      .compact-usage[data-tone="green"] .gauge-fill { background: var(--gauge-green); }
-      .compact-usage[data-tone="amber"] .gauge-fill { background: var(--gauge-amber); }
-      .compact-usage[data-tone="red"] .gauge-fill { background: var(--gauge-red); }
+      .compact-usage[data-tone="green"] .compact-pct { color: var(--compact-green); }
+      .compact-usage[data-tone="amber"] .compact-pct { color: var(--compact-amber); }
+      .compact-usage[data-tone="red"] .compact-pct { color: var(--compact-red); }
+      .compact-usage[data-tone="green"] .gauge-fill { background: var(--compact-green); }
+      .compact-usage[data-tone="amber"] .gauge-fill { background: var(--compact-amber); }
+      .compact-usage[data-tone="red"] .gauge-fill { background: var(--compact-red); }
       .settings-panel {
         height: calc(100% - 30px); overflow-y: auto; padding: 10px 8px;
         display: grid; gap: 8px; align-content: start;
@@ -176,6 +184,17 @@
 
     <script>
       const $ = (id) => document.getElementById(id);
+
+      function applyTaskbarTheme(theme) {
+        const root = document.documentElement;
+        if (!theme) {
+          root.style.removeProperty("--compact-bg");
+          document.body.classList.remove("taskbar-light");
+          return;
+        }
+        root.style.setProperty("--compact-bg", theme.background);
+        document.body.classList.toggle("taskbar-light", theme.light === true);
+      }
 
       const DICTS = {
         en: {
@@ -513,6 +532,7 @@
           .catch((error) => console.error("Failed to update minimized state", error));
       });
       $("tbClose").addEventListener("click", () => window.rotator.closeWidget());
+      window.rotator.onWidgetTaskbarTheme(applyTaskbarTheme);
       window.rotator.onChanged(() => refresh());
       refresh();
       setInterval(refresh, 15000);

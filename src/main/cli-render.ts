@@ -18,7 +18,7 @@ const WINDOW_WIDTH = 25;
 const STATUS_DEFAULT_WIDTH = 80;
 const STATUS_ACCOUNT_MAX_WIDTH = 20;
 const STATUS_ACCOUNT_MIN_WIDTH = 2;
-const STATUS_GAUGE_WITH_RESET_WIDTH = 12;
+const STATUS_GAUGE_WITH_RESET_WIDTH = 13;
 const STATUS_GAUGE_WITHOUT_RESET_WIDTH = 6;
 const STATUS_ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const STATUS_ZERO_WIDTH_PATTERN = /\p{Mark}/u;
@@ -95,11 +95,7 @@ function statusGauge(window: PWindow | null, includeReset: boolean, interiorWidt
   const centeredLabel =
     label.length > interiorWidth
       ? label
-      : window === null
-        ? `${" ".repeat(Math.floor((interiorWidth - label.length) / 2))}${label}`.padEnd(interiorWidth, " ")
-        : includeReset
-          ? ` ${`${used}%`.padStart(4, " ")} ${window.resetsAt === null ? "" : resetText(window.resetsAt)}`.padEnd(interiorWidth, " ")
-          : ` ${`${used}%`.padStart(4, " ")} `;
+      : `${" ".repeat(Math.floor((interiorWidth - label.length) / 2))}${label}`.padEnd(interiorWidth, " ");
   const plain = `[${centeredLabel}]`;
   if (process.env.NO_COLOR === "1") return plain;
   const blockWidth = interiorWidth + 2;
@@ -109,7 +105,7 @@ function statusGauge(window: PWindow | null, includeReset: boolean, interiorWidt
       .map((ch) => `${BG_GRAY}${FG}${ch}`)
       .join("") + RESET;
   }
-  const text = centeredLabel.padEnd(blockWidth, " ");
+  const text = ` ${centeredLabel} `;
   const filled = Math.round((used / 100) * blockWidth);
   return Array.from(text)
     .map((ch, index) => {

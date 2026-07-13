@@ -6,6 +6,7 @@ import {
   ipcMain,
   nativeImage,
   Notification,
+  nativeTheme,
   screen,
   shell,
 } from "electron";
@@ -27,6 +28,7 @@ import type { CliSession } from "./cli-sessions";
 
 const providers: Provider[] = [codexProvider, claudeProvider];
 const APP_USER_MODEL_ID = "com.local.lazyswitch";
+const DEFAULT_WIDGET_BACKGROUND = "#16171b";
 
 if (process.platform === "win32") app.setAppUserModelId(APP_USER_MODEL_ID);
 
@@ -37,6 +39,7 @@ let managerWin: BrowserWindow | null = null;
 let onboardingWin: BrowserWindow | null = null;
 let widgetWin: BrowserWindow | null = null;
 let widgetSettingsWin: BrowserWindow | null = null;
+let openingUsageWidget: Promise<void> | null = null;
 
 /** Per-provider runtime state. */
 interface PState {
@@ -702,6 +705,14 @@ interface PhysicalRect {
 
 let cachedTrayNotifyRect: PhysicalRect | null = null;
 
+interface WidgetTaskbarTheme {
+  background: string;
+  light: boolean;
+}
+
+let cachedTaskbarTheme: WidgetTaskbarTheme | null | undefined;
+let taskbarThemeQuery: Promise<WidgetTaskbarTheme | null> | null = null;
+
 function isCompactPosition(value: unknown): value is "taskbar" | "bottom-right" | "bottom-left" {
   return value === "taskbar" || value === "bottom-right" || value === "bottom-left";
 }
@@ -763,6 +774,115 @@ function queryTrayNotifyRect(): Promise<PhysicalRect | null> {
         }
       }
     );
+  });
+}
+
+const TASKBAR_THEME_POWERSHELL = `
+$personalize = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -ErrorAction Stop
+$dwm = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\DWM' -ErrorAction Stop
+[Console]::WriteLine((ConvertTo-Json @{
+  SystemUsesLightTheme = [int]$personalize.SystemUsesLightTheme
+  ColorPrevalence = [int]$dwm.ColorPrevalence
+  AccentColor = [uint32]$dwm.AccentColor
+} -Compress))
+`.trim();
+
+function readTaskbarTheme(value: unknown): WidgetTaskbarTheme | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  const systemUsesLightTheme = row.SystemUsesLightTheme;
+  const colorPrevalence = row.ColorPrevalence;
+  const accentColor = row.AccentColor;
+  if (![systemUsesLightTheme, colorPrevalence, accentColor].every(
+    (item) => typeof item === "number" && Number.isInteger(item) && Number.isFinite(item)
+  )) return null;
+  if (systemUsesLightTheme !== 0 && systemUsesLightTheme !== 1) return null;
+  if (colorPrevalence !== 0 && colorPrevalence !== 1) return null;
+  if ((accentColor as number) < 0 || (accentColor as number) > 0xffffffff) return null;
+
+  let red: number;
+  let green: number;
+  let blue: number;
+  if (colorPrevalence === 1) {
+    const accent = accentColor as number;
+    // AccentColor is stored as ABGR, so the low three bytes are R, G, B.
+    const darken = (channel: number) => Math.round(channel * 0.82);
+    red = darken(accent & 0xff);
+    green = darken((accent >>> 8) & 0xff);
+    blue = darken((accent >>> 16) & 0xff);
+  } else if (systemUsesLightTheme === 1) {
+    red = 0xf3;
+    green = 0xf3;
+    blue = 0xf3;
+  } else {
+    red = 0x20;
+    green = 0x20;
+    blue = 0x20;
+  }
+  const background = `#${[red, green, blue].map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+  const luminance = [red, green, blue].map((channel) => {
+    const normalized = channel / 255;
+    return normalized <= 0.03928
+      ? normalized / 12.92
+      : Math.pow((normalized + 0.055) / 1.055, 2.4);
+  });
+  const relativeLuminance = 0.2126 * luminance[0] + 0.7152 * luminance[1] + 0.0722 * luminance[2];
+  return { background, light: relativeLuminance > 0.5 };
+}
+
+function queryTaskbarTheme(): Promise<WidgetTaskbarTheme | null> {
+  if (process.platform !== "win32") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodePowerShell(TASKBAR_THEME_POWERSHELL)],
+      { timeout: 1_800, windowsHide: true, maxBuffer: 64 * 1024 },
+      (error, stdout) => {
+        if (error) {
+          resolve(null);
+          return;
+        }
+        try {
+          resolve(readTaskbarTheme(JSON.parse(String(stdout).trim())));
+        } catch {
+          resolve(null);
+        }
+      }
+    );
+  });
+}
+
+function getTaskbarTheme(): Promise<WidgetTaskbarTheme | null> {
+  if (cachedTaskbarTheme !== undefined) return Promise.resolve(cachedTaskbarTheme);
+  if (!taskbarThemeQuery) {
+    taskbarThemeQuery = queryTaskbarTheme().then((theme) => {
+      cachedTaskbarTheme = theme;
+      return theme;
+    }).finally(() => {
+      taskbarThemeQuery = null;
+    });
+  }
+  return taskbarThemeQuery;
+}
+
+function isTaskbarCompactWidget(): boolean {
+  return cfg.usageWidget.minimized && cfg.usageWidget.compactPosition === "taskbar";
+}
+
+function sendWidgetTaskbarTheme(theme: WidgetTaskbarTheme | null): void {
+  if (!widgetWin || widgetWin.isDestroyed()) return;
+  widgetWin.setBackgroundColor(theme?.background ?? DEFAULT_WIDGET_BACKGROUND);
+  widgetWin.webContents.send("widget:taskbar-theme", theme);
+}
+
+function applyWidgetTaskbarTheme(): void {
+  if (!widgetWin || widgetWin.isDestroyed()) return;
+  if (!isTaskbarCompactWidget()) {
+    sendWidgetTaskbarTheme(null);
+    return;
+  }
+  void getTaskbarTheme().then((theme) => {
+    if (isTaskbarCompactWidget()) sendWidgetTaskbarTheme(theme);
   });
 }
 
@@ -984,10 +1104,27 @@ function openWidgetSettings(): void {
 function openUsageWidget(): void {
   if (widgetWin && !widgetWin.isDestroyed()) {
     widgetWin.show();
+    applyWidgetTaskbarTheme();
+    return;
+  }
+  if (openingUsageWidget) return;
+  openingUsageWidget = openUsageWidgetWindow().finally(() => {
+    openingUsageWidget = null;
+  });
+}
+
+async function openUsageWidgetWindow(): Promise<void> {
+  const initialTheme = isTaskbarCompactWidget() ? await getTaskbarTheme() : null;
+  if (!cfg.usageWidget.enabled || !hasEnrolledAccounts() || isOnboarding()) return;
+  if (widgetWin && !widgetWin.isDestroyed()) {
+    widgetWin.show();
     return;
   }
   const normalBounds = widgetDefaultBounds();
   const initialBounds = cfg.usageWidget.minimized ? widgetInitialCompactBounds() : normalBounds;
+  const initialBackground = isTaskbarCompactWidget()
+    ? initialTheme?.background ?? DEFAULT_WIDGET_BACKGROUND
+    : DEFAULT_WIDGET_BACKGROUND;
   widgetWin = new BrowserWindow({
     ...initialBounds,
     minWidth: cfg.usageWidget.minimized ? WIDGET_COMPACT_WIDTH : WIDGET_MIN_WIDTH,
@@ -1001,7 +1138,7 @@ function openUsageWidget(): void {
     maximizable: false,
     fullscreenable: false,
     title: "LazySwitch Usage",
-    backgroundColor: "#16171b",
+    backgroundColor: initialBackground,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -1049,6 +1186,7 @@ function openUsageWidget(): void {
     if (!widgetWin || widgetWin.isDestroyed()) return;
     widgetWin.webContents.setZoomFactor(1);
     void widgetWin.webContents.setVisualZoomLevelLimits(1, 1);
+    applyWidgetTaskbarTheme();
   });
   widgetWin.loadFile(rendererPath("widget.html"));
   if (cfg.usageWidget.minimized) void applyWidgetMinimized(true);
@@ -1057,12 +1195,14 @@ function openUsageWidget(): void {
 function applyWidgetMinimized(minimized: boolean, compactHeight = WIDGET_COMPACT_DEFAULT_HEIGHT): void {
   if (!widgetWin || widgetWin.isDestroyed()) return;
   if (minimized) {
+    applyWidgetTaskbarTheme();
     setWidgetContextMenuHooked(true);
     widgetWin.setMinimumSize(WIDGET_COMPACT_WIDTH, WIDGET_COMPACT_MIN_HEIGHT);
     widgetWin.setResizable(false);
     widgetWin.setMovable(false);
     void positionCompactWidget(compactHeight);
   } else {
+    sendWidgetTaskbarTheme(null);
     setWidgetContextMenuHooked(false);
     widgetWin.setMinimumSize(WIDGET_MIN_WIDTH, WIDGET_MIN_HEIGHT);
     widgetWin.setResizable(true);
@@ -1278,6 +1418,7 @@ function registerIpc(): void {
     if (typeof widgetPatch?.minimized === "boolean" && widgetPatch.minimized !== previousMinimized) {
       applyWidgetMinimized(widgetPatch.minimized);
     } else if (isCompactPosition(widgetPatch?.compactPosition) && widgetPatch.compactPosition !== previousCompactPosition && cfg.usageWidget.minimized) {
+      applyWidgetTaskbarTheme();
       void positionCompactWidget(widgetWin?.getBounds().height ?? WIDGET_COMPACT_DEFAULT_HEIGHT);
     }
     if (patch && "launchAtLogin" in patch) applyLaunchAtLogin();
@@ -1332,6 +1473,10 @@ if (!app.requestSingleInstanceLock()) {
 app.on("second-instance", () => openManager());
 
 app.whenReady().then(() => {
+  nativeTheme.on("updated", () => {
+    cachedTaskbarTheme = undefined;
+    if (isTaskbarCompactWidget()) applyWidgetTaskbarTheme();
+  });
   ensureCliStatusHooks();
   ensureWindowsToastShortcut();
   if (process.platform === "darwin") app.dock?.hide();

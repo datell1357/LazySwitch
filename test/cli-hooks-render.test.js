@@ -53,7 +53,7 @@ test("statusline adapts every account line to the available width", () => {
       assert.ok(lines.every((line) => line.includes("5H [") && line.includes("Week [")), output);
       const gaugeInteriors = lines.map((line) => [...line.matchAll(/\[([^\]]*)\]/g)].map((match) => match[1]));
       assert.ok(gaugeInteriors.every((interiors) => interiors.every((interior) => interior.length === interiors[0].length)), output);
-      assert.ok(gaugeInteriors.flat().every((interior) => interior.length === 6 || interior.length === 12), output);
+      assert.ok(gaugeInteriors.flat().every((interior) => interior.length === 6 || interior.length === 13), output);
       if (width === 80) assert.match(output, /20d17h/);
       if (width <= 55) {
         assert.doesNotMatch(lines[0], /20d17h/);
@@ -108,7 +108,7 @@ test("colored statusline remains width-aware after stripping ANSI", () => {
       const line = stripAnsi(renderStatusline(rows, width));
       assert.ok(line.length <= width, `ANSI width ${width}: ${line}`);
       assert.ok(!line.includes("[") && !line.includes("]"), line);
-      const gaugeWidth = width === 80 ? 14 : 8;
+      const gaugeWidth = width === 80 ? 15 : 8;
       for (const marker of ["5H", "Week", "Fable"]) {
         const markerIndex = line.indexOf(marker);
         assert.notEqual(markerIndex, -1, line);
@@ -131,7 +131,7 @@ test("statusline renders missing usage as centered n/a gauges", () => {
     const plain = renderStatusline([
       { provider: "Claude", account: account("slot-a", "slot-a@example.com"), active: true, usage: null, error: "unavailable" },
     ]);
-    assert.match(plain, /5H \[    n\/a     \] Week \[    n\/a     \] Fable \[    n\/a     \]$/);
+    assert.match(plain, /5H \[     n\/a     \] Week \[     n\/a     \] Fable \[     n\/a     \]$/);
     assert.ok(!plain.includes("unavail"));
 
     delete process.env.NO_COLOR;
@@ -143,7 +143,7 @@ test("statusline renders missing usage as centered n/a gauges", () => {
       const markerIndex = colored.indexOf(marker);
       assert.notEqual(markerIndex, -1, colored);
       assert.equal(colored[markerIndex + marker.length], " ", colored);
-      assert.equal(colored.slice(markerIndex + marker.length + 1, markerIndex + marker.length + 1 + 14), "     n/a      ", colored);
+      assert.equal(colored.slice(markerIndex + marker.length + 1, markerIndex + marker.length + 1 + 15), "      n/a      ", colored);
     }
     assert.ok(!colored.includes("unavail"));
   } finally {
