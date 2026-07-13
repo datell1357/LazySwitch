@@ -21,6 +21,8 @@ use crate::core::providers::{Provider, ReqwestTransport};
 use crate::core::switcher;
 use crate::core::types::{LoginFlowResult, PAccount, PUsage, ProviderPrefs};
 use crate::core::platform;
+use crate::core::cli_handover;
+use crate::core::cli_sessions::{self, CliRestartResult, CliSession};
 
 const SHIM: &str = include_str!("../../src/renderer/tauri-shim.js");
 const DEFAULT_WIDGET_BACKGROUND: (u8, u8, u8, u8) = (0x16, 0x17, 0x1b, 0xff);
@@ -72,6 +74,7 @@ struct RuntimeData {
     next_toast_id: u64,
     approval: Option<tokio::sync::oneshot::Sender<bool>>,
     cli_payload: Option<Value>,
+    cli_response: Option<tokio::sync::oneshot::Sender<String>>,
     probe_reports: HashMap<String, Value>,
     widget_context_menu_open: bool,
     widget_topmost_timer_started: bool,
@@ -735,6 +738,7 @@ async fn handle_limit(app: AppHandle, provider_id: String, usage: PUsage) {
             return;
         }
     }
+    let cli_sessions = cli_sessions_for(&provider_id);
     let result = switcher::switch_to(provider.as_ref(), &next.name, &prefs, false).await;
     if let Ok(mut runtime) = state.runtime.lock() {
         runtime.switching.remove(&provider_id);
@@ -747,7 +751,11 @@ async fn handle_limit(app: AppHandle, provider_id: String, usage: PUsage) {
             );
             let desktop_restarted = if prefs.auto_approve { provider.desktop_restart(&prefs).await } else { false };
             if desktop_restarted { eprintln!("[limit:{provider_id}] desktop restarted"); }
-            eprintln!("[limit:{provider_id}] TODO(phase-6): CLI handover is deferred");
+            let app_for_cli = app.clone();
+            let provider_for_cli = provider_id.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = schedule_cli_handover(app_for_cli, provider_for_cli, cli_sessions).await;
+            });
             notify(
                 &app,
                 format!("{provider_id} switched"),
@@ -858,6 +866,98 @@ fn open_external(url: &str) -> Result<(), String> {
     result.map(|_| ()).map_err(|error| error.to_string())
 }
 
+fn cli_sessions_for(provider: &str) -> Vec<CliSession> {
+    cli_sessions::detect_cli_sessions(provider, std::process::id())
+}
+
+fn cli_result_notification(app: &AppHandle, provider: &str, result: &CliRestartResult) {
+    let state = app.state::<AppState>();
+    let name = cli_handover::provider_name(provider);
+    let mut vars = HashMap::new();
+    vars.insert("provider".into(), name.to_owned());
+    vars.insert("count".into(), result.restarted.to_string());
+    vars.insert("closed".into(), result.closed.to_string());
+    vars.insert("manual".into(), result.manual.to_string());
+    let key = if result.manual > 0 { "notif.cliRestartedManualBody" } else { "notif.cliRestartedBody" };
+    notify(
+        app,
+        format!("{} — {}", if provider == "claude" { "Claude Code" } else { "Codex" }, tray_text(&state, "notif.cliRestartedTitle", &[])),
+        core::i18n::t(tray_lang(&state), key, Some(&vars)),
+    );
+}
+
+fn open_cli_restart(app: &AppHandle, provider: &str, sessions: &[CliSession]) -> Result<tokio::sync::oneshot::Receiver<String>, String> {
+    let state = app.state::<AppState>();
+    let payload = cli_handover::payload(provider, sessions);
+    let value = serde_json::to_value(payload).map_err(|error| error.to_string())?;
+    let (sender, receiver) = tokio::sync::oneshot::channel::<String>();
+    if let Ok(mut runtime) = state.runtime.lock() {
+        runtime.cli_payload = Some(value);
+        runtime.cli_response = Some(sender);
+    }
+    let lang = format!("{:?}", tray_lang(&state)).to_lowercase();
+    match WebviewWindowBuilder::new(app, "cli-restart", WebviewUrl::App(format!("cli-restart.html?lang={lang}").into()))
+        .title(core::i18n::t(tray_lang(&state), "popup.cliTitle", None))
+        .inner_size(520.0, 520.0)
+        .decorations(false)
+        .resizable(false)
+        .always_on_top(true)
+        .transparent(true)
+        .background_color(tauri::window::Color(0, 0, 0, 0))
+        .initialization_script(SHIM)
+        .build()
+    {
+        Ok(window) => {
+            let app_for_close = app.clone();
+            window.on_window_event(move |event| {
+                if matches!(event, WindowEvent::Destroyed) {
+                    if let Ok(mut runtime) = app_for_close.state::<AppState>().runtime.lock() {
+                        if let Some(sender) = runtime.cli_response.take() { let _ = sender.send("later".into()); }
+                    }
+                }
+            });
+            Ok(receiver)
+        }
+        Err(error) => {
+            if let Ok(mut runtime) = state.runtime.lock() {
+                runtime.cli_payload = None;
+                runtime.cli_response = None;
+            }
+            Err(error.to_string())
+        }
+    }
+}
+
+async fn schedule_cli_handover(app: AppHandle, provider: String, sessions: Vec<CliSession>) -> Option<CliRestartResult> {
+    if sessions.is_empty() { return None; }
+    let state = app.state::<AppState>();
+    let prefs = provider_prefs(&state_config(&state), &provider).ok()?;
+    let action = if prefs.auto_restart_cli {
+        "restart".to_owned()
+    } else {
+        let Ok(receiver) = open_cli_restart(&app, &provider, &sessions) else { return None; };
+        receiver.await.unwrap_or_else(|_| "later".into())
+    };
+    if let Ok(mut runtime) = app.state::<AppState>().runtime.lock() {
+        runtime.cli_payload = None;
+        runtime.cli_response = None;
+    }
+    if action == "copy" {
+        let command = cli_handover::resume_command(&provider);
+        platform::set_clipboard_text(&command.text);
+        notify(&app, "Resume command copied", format!("Paste {} in any running {} terminal.", command.text, cli_handover::provider_name(&provider)));
+        return None;
+    }
+    if action != "restart" { return None; }
+    let command = cli_handover::resume_command(&provider);
+    let sessions_for_worker = sessions.clone();
+    let command_for_worker = command.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || cli_sessions::default_restart_cli_sessions(&sessions_for_worker, &command_for_worker)).await.ok()?;
+    if result.manual > 0 { platform::set_clipboard_text(&command.text); }
+    cli_result_notification(&app, &provider, &result);
+    Some(result)
+}
+
 #[tauri::command(rename = "providers:list")]
 fn providers_list(state: tauri::State<'_, AppState>) -> Vec<ProviderInfo> {
     provider_info(&state)
@@ -894,11 +994,16 @@ async fn accounts_switch(
             name: None,
         });
     };
+    let cli_sessions = cli_sessions_for(&provider);
     match switcher::switch_to(account_provider.as_ref(), &name, &prefs, false).await {
         Ok(_) => {
             let desktop_restarted = account_provider.desktop_restart(&prefs).await;
             if desktop_restarted { eprintln!("[accounts:switch] desktop restarted"); }
-            eprintln!("[accounts:switch] TODO(phase-6): CLI handover is deferred");
+            let app_for_cli = app.clone();
+            let provider_for_cli = provider.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = schedule_cli_handover(app_for_cli, provider_for_cli, cli_sessions).await;
+            });
             broadcast_changed(&app);
             notify(
                 &app,
@@ -1084,9 +1189,11 @@ async fn accounts_add_via_login(
 }
 
 #[tauri::command(rename = "cli:testRestart")]
-fn cli_test_restart(provider: String) -> Value {
-    eprintln!("[cli:testRestart:{provider}] TODO(phase-6): CLI handover is deferred");
-    serde_json::json!({"ok": true, "sessions": 0, "result": null})
+async fn cli_test_restart(app: AppHandle, provider: String) -> Value {
+    let sessions = cli_sessions_for(&provider);
+    let count = sessions.len();
+    let result = schedule_cli_handover(app, provider, sessions).await;
+    serde_json::json!({"ok": true, "sessions": count, "result": result})
 }
 
 #[tauri::command(rename = "config:get")]
@@ -1246,9 +1353,11 @@ fn cli_restart_payload(state: tauri::State<'_, AppState>) -> Option<Value> {
 
 #[tauri::command(rename = "cli-restart:respond")]
 fn cli_restart_respond(app: AppHandle, state: tauri::State<'_, AppState>, action: String) {
-    eprintln!("[cli-restart:{action}] TODO(phase-6): CLI handover is deferred");
     if let Ok(mut runtime) = state.runtime.lock() {
-        runtime.cli_payload = None;
+        if let Some(sender) = runtime.cli_response.take() {
+            let action = if action == "restart" || action == "copy" { action } else { "later".into() };
+            let _ = sender.send(action);
+        }
     }
     close_window(&app, "cli-restart");
 }

@@ -14,7 +14,7 @@ mod windows_impl {
     use std::time::Duration;
 
     use windows::core::{w, PCWSTR, PWSTR};
-    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HWND, POINT};
+    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, POINT};
     use windows::Win32::Graphics::Gdi::{MonitorFromPoint, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST};
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -36,6 +36,9 @@ mod windows_impl {
         HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, LWA_ALPHA, SWP_NOACTIVATE, SWP_NOMOVE,
         SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE, WS_EX_LAYERED,
     };
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use windows::Win32::System::DataExchange::{EmptyClipboard, OpenClipboard, SetClipboardData, CloseClipboard};
+    const CF_UNICODETEXT: u32 = 13;
 
     const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
     const APP_NAME: PCWSTR = w!("LazySwitch");
@@ -301,6 +304,26 @@ mod windows_impl {
         std::thread::sleep(Duration::from_millis(1500));
         if launch.to_ascii_lowercase().starts_with("shell:") { open_url(&launch).is_ok() } else { std::process::Command::new(launch).spawn().is_ok() }
     }
+
+    pub fn set_clipboard_text(value: &str) -> bool {
+        let wide: Vec<u16> = value.encode_utf16().chain(std::iter::once(0)).collect();
+        let Ok(()) = (unsafe { OpenClipboard(Some(HWND::default())) }) else { return false };
+        let result = unsafe {
+            let _ = EmptyClipboard();
+            let memory = GlobalAlloc(GMEM_MOVEABLE, wide.len() * std::mem::size_of::<u16>());
+            let Ok(memory) = memory else { let _ = CloseClipboard(); return false };
+            let pointer = GlobalLock(memory);
+            if pointer.is_null() {
+                let _ = CloseClipboard();
+                return false;
+            }
+            std::ptr::copy_nonoverlapping(wide.as_ptr() as *const u8, pointer as *mut u8, wide.len() * 2);
+            let _ = GlobalUnlock(memory);
+            SetClipboardData(CF_UNICODETEXT, Some(HANDLE(memory.0))).is_ok()
+        };
+        unsafe { let _ = CloseClipboard(); }
+        result
+    }
 }
 
 #[cfg(windows)]
@@ -311,6 +334,9 @@ pub fn restart_desktop(_prefs: &ProviderPrefs) -> bool { false }
 
 #[cfg(not(windows))]
 pub fn open_url(_url: &str) -> Result<(), String> { Err("browser launch is only implemented on Windows in this port".into()) }
+
+#[cfg(not(windows))]
+pub fn set_clipboard_text(_value: &str) -> bool { false }
 
 #[cfg(not(windows))]
 pub fn taskbar_theme() -> Option<bool> { None }

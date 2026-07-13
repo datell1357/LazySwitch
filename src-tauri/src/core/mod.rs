@@ -1,5 +1,11 @@
 pub mod accounts;
+pub mod cli_cwd;
+pub mod cli_handover;
+pub mod cli_sessions;
+pub mod claude_sessions;
 pub mod config;
+pub mod codex_rollouts;
+pub mod desktop_processes;
 pub mod i18n;
 pub mod paths;
 pub mod platform;
