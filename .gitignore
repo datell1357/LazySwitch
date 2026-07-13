@@ -8,3 +8,6 @@ lazyswitch.txt
 
 .omo/
 .codex-remote-attachments/
+
+# Rust / Tauri
+src-tauri/target/
