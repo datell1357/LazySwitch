@@ -33,6 +33,7 @@
     getLang: () => invoke("lang:get"),
     setConfig: (patch) => invoke("config:set", { patch }),
     widgetCompactHeight: (height) => send("widget:compact-height", { height }),
+    widgetContextMenu: () => send("widget:context-menu"),
 
     finishOnboarding: (openAccounts) =>
       invoke("onboarding:finish", { open_accounts: openAccounts }),
@@ -56,4 +57,12 @@
     if (!drag || target.closest("button, input, select, textarea, a, [style*='no-drag']")) return;
     send("window:startDragging");
   }, true);
+
+  // The compact widget has no titlebar, so its menu lives on right-click.
+  // Electron hooked WM_CONTEXTMENU for this; here the webview sees the event.
+  document.addEventListener("contextmenu", (event) => {
+    if (!document.body.classList.contains("compact")) return;
+    event.preventDefault();
+    send("widget:context-menu");
+  });
 })();

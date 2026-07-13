@@ -96,6 +96,55 @@ impl CodexProvider {
     pub fn scan_error(&self) -> Option<String> {
         self.session_hooks.scan_error()
     }
+
+    pub async fn add_via_login_with_callback(
+        &self,
+        on_url: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    ) -> crate::core::types::LoginFlowResult {
+        let root = std::env::temp_dir().join(format!("lazyswitch-codex-login-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        if let Err(error) = std::fs::create_dir_all(&root) {
+            return crate::core::types::LoginFlowResult { ok: false, error: Some(error.to_string()), ..Default::default() };
+        }
+        let mut child = match std::process::Command::new("codex")
+            .arg("login").env("CODEX_HOME", &root)
+            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn()
+        {
+            Ok(child) => child,
+            Err(error) => { let _ = std::fs::remove_dir_all(&root); return crate::core::types::LoginFlowResult { ok: false, error: Some(error.to_string()), ..Default::default() }; }
+        };
+        let streams: Vec<Box<dyn std::io::Read + Send>> = [
+            child.stdout.take().map(|stream| Box::new(stream) as Box<dyn std::io::Read + Send>),
+            child.stderr.take().map(|stream| Box::new(stream) as Box<dyn std::io::Read + Send>),
+        ].into_iter().flatten().collect();
+        for mut stream in streams {
+            let on_url = on_url.clone();
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = std::io::Read::read_to_end(&mut stream, &mut bytes);
+                if let Some(on_url) = on_url {
+                    if let Some(url) = String::from_utf8_lossy(&bytes).split_whitespace().find(|value| value.starts_with("https://auth.openai.com/")) { on_url(url.to_owned()); }
+                }
+            });
+        }
+        let status = match child.wait() {
+            Ok(status) => status,
+            Err(error) => { let _ = std::fs::remove_dir_all(&root); return crate::core::types::LoginFlowResult { ok: false, error: Some(error.to_string()), ..Default::default() }; }
+        };
+        let auth = root.join("auth.json");
+        let Some(auth_value) = read_auth(&auth) else {
+            let _ = std::fs::remove_dir_all(&root);
+            return crate::core::types::LoginFlowResult { ok: false, error: Some(format!("login did not complete (exit {:?}); no auth.json produced", status.code())), ..Default::default() };
+        };
+        let email = email_from_auth(Some(&auth_value));
+        let name = derive_slot_name(&self.paths, email.as_deref());
+        let destination = self.paths.account_auth_file(&name);
+        let result = std::fs::create_dir_all(self.paths.account_dir(&name)).and_then(|_| std::fs::copy(&auth, destination).map(|_| ()))
+            .map(|_| crate::core::types::LoginFlowResult { ok: true, name: Some(name), email, error: None })
+            .unwrap_or_else(|error| crate::core::types::LoginFlowResult { ok: false, error: Some(error.to_string()), ..Default::default() });
+        let _ = std::fs::remove_dir_all(&root);
+        result
+    }
     fn atomic_copy(
         &self,
         source: &std::path::Path,
@@ -187,6 +236,6 @@ impl Provider for CodexProvider {
         &'a self,
         _prefs: &'a ProviderPrefs,
     ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
-        Box::pin(async { false })
+        Box::pin(async move { crate::core::platform::restart_desktop(_prefs) })
     }
 }

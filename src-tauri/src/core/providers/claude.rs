@@ -1,13 +1,20 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::io::{Read, Write};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::net::TcpListener;
+use std::time::{Duration, Instant};
 
+use base64::Engine;
 use chrono::{DateTime, Utc};
+use rand::{rngs::OsRng, RngCore};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 use super::{HttpRequest, Provider, ReqwestTransport, SharedTransport};
 use crate::core::paths::ClaudePaths;
+use crate::core::platform;
 use crate::core::types::{LoginFlowResult, PAccount, PUsage, PWindow};
 use crate::core::{atomic_write, read_json, CoreError};
 
@@ -19,6 +26,10 @@ const SCOPES: &str =
 const REFRESH_BUFFER_MS: i64 = 5 * 60 * 1000;
 const USAGE_CACHE_MS: i64 = 5 * 60 * 1000;
 const DEFAULT_429_BACKOFF_MS: i64 = 5 * 60 * 1000;
+const LOGIN_PORT: u16 = 54545;
+const LOGIN_REDIRECT: &str = "http://localhost:54545/callback";
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
 
 #[derive(Clone, Debug)]
 struct CacheEntry {
@@ -224,13 +235,123 @@ impl ClaudeProvider {
     }
 
     pub async fn add_via_login(&self) -> LoginFlowResult {
-        // TODO(phase-4): the interactive browser OAuth flow is intentionally not ported yet.
-        LoginFlowResult {
-            ok: false,
-            error: Some("Claude browser login is deferred to phase 4".into()),
-            ..LoginFlowResult::default()
+        self.add_via_login_with_callback(None).await
+    }
+
+    pub async fn add_via_login_with_callback(
+        &self,
+        on_url: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    ) -> LoginFlowResult {
+        let mut verifier_bytes = [0u8; 32];
+        let mut state_bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut verifier_bytes);
+        OsRng.fill_bytes(&mut state_bytes);
+        let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(verifier_bytes);
+        let state = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(state_bytes);
+        let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(Sha256::digest(verifier.as_bytes()));
+        let auth_query = format!(
+            "client_id={}&response_type=code&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
+            urlencoding::encode(CLIENT_ID), urlencoding::encode(LOGIN_REDIRECT),
+            urlencoding::encode(SCOPES), urlencoding::encode(&challenge), urlencoding::encode(&state)
+        );
+        let url = format!(
+            "https://claude.ai/logout?returnTo={}",
+            urlencoding::encode(&format!("/oauth/authorize?{auth_query}"))
+        );
+        let callback = tokio::task::spawn_blocking({
+            let state = state.clone();
+            move || wait_for_callback(&state)
+        });
+        if let Some(on_url) = on_url { on_url(url.clone()); }
+        if let Err(error) = platform::open_url(&url) {
+            return LoginFlowResult { ok: false, error: Some(error), ..LoginFlowResult::default() };
+        }
+        let code = match callback.await {
+            Ok(Ok(code)) => code,
+            Ok(Err(error)) => return LoginFlowResult { ok: false, error: Some(error), ..LoginFlowResult::default() },
+            Err(error) => return LoginFlowResult { ok: false, error: Some(error.to_string()), ..LoginFlowResult::default() },
+        };
+        let body = match self.exchange_authorization_code(&code, &state, &verifier).await {
+            Ok(body) => body,
+            Err(error) => return LoginFlowResult { ok: false, error: Some(error), ..LoginFlowResult::default() },
+        };
+        let access_token = match body.get("access_token").and_then(Value::as_str) {
+            Some(token) if !token.is_empty() => token,
+            _ => return LoginFlowResult { ok: false, error: Some("token exchange returned no access_token".into()), ..LoginFlowResult::default() },
+        };
+        let oauth = serde_json::json!({
+            "accessToken": access_token,
+            "refreshToken": body.get("refresh_token").cloned().unwrap_or(Value::Null),
+            "expiresAt": Utc::now().timestamp_millis() + body.get("expires_in").and_then(Value::as_i64).unwrap_or(0) * 1000,
+            "scopes": body.get("scope").and_then(Value::as_str).map(|s| s.split(' ').map(String::from).collect::<Vec<_>>()).unwrap_or_else(|| SCOPES.split(' ').map(String::from).collect::<Vec<_>>()),
+            "subscriptionType": body.get("account").and_then(|v| v.get("subscription_type")).cloned().unwrap_or(Value::Null),
+        });
+        let mut email = body.get("account").and_then(|v| v.get("email_address")).and_then(Value::as_str).map(String::from)
+            .or_else(|| body.get("account").and_then(|v| v.get("email")).and_then(Value::as_str).map(String::from));
+        let mut uuid = body.get("account").and_then(|v| v.get("uuid")).and_then(Value::as_str).map(String::from);
+        let mut org_uuid = None; let mut org_name = None;
+        if let Ok(profile) = self.transport.request(HttpRequest { method: "GET".into(), url: PROFILE_URL.into(), headers: std::collections::HashMap::from([(String::from("Authorization"), format!("Bearer {access_token}")), (String::from("Accept"), String::from("application/json")), (String::from("anthropic-beta"), String::from("oauth-2025-04-20"))]), body: None }).await {
+            if let Some(profile) = profile.body {
+                email = email.or_else(|| profile.get("account").and_then(|v| v.get("email_address")).and_then(Value::as_str).map(String::from));
+                uuid = uuid.or_else(|| profile.get("account").and_then(|v| v.get("uuid")).and_then(Value::as_str).map(String::from));
+                org_uuid = profile.get("organization").and_then(|v| v.get("uuid")).and_then(Value::as_str).map(String::from);
+                org_name = profile.get("organization").and_then(|v| v.get("name")).and_then(Value::as_str).map(String::from);
+            }
+        }
+        let existing = uuid.as_deref().and_then(|id| self.list_slots().into_iter().find(|a| a.account_id.as_deref() == Some(id)));
+        let slot = existing.map(|a| a.name).unwrap_or_else(|| self.derive_slot_name(email.as_deref()));
+        let old = read_json(&self.paths.slot_meta_file(&slot)).unwrap_or_else(|| Value::Object(Map::new()));
+        let mut account = old.as_object().cloned().unwrap_or_default();
+        let mut oauth_account = account.remove("oauthAccount").unwrap_or(Value::Object(Map::new()));
+        if let Some(object) = oauth_account.as_object_mut() {
+            object.insert("accountUuid".into(), uuid.clone().map(Value::String).unwrap_or(Value::Null));
+            object.insert("emailAddress".into(), email.clone().map(Value::String).unwrap_or(Value::Null));
+            if let Some(value) = &org_uuid { object.insert("organizationUuid".into(), Value::String(value.clone())); }
+            if let Some(value) = &org_name { object.insert("organizationName".into(), Value::String(value.clone())); }
+        }
+        account.insert("oauthAccount".into(), oauth_account.clone());
+        if let Err(error) = std::fs::create_dir_all(self.paths.slot_dir(&slot))
+            .map_err(CoreError::from)
+            .and_then(|_| self.write_json(&self.paths.slot_credentials_file(&slot), &serde_json::json!({"claudeAiOauth": oauth}), true))
+            .and_then(|_| self.write_json(&self.paths.slot_meta_file(&slot), &Value::Object(account), false))
+        { return LoginFlowResult { ok: false, error: Some(error.to_string()), ..LoginFlowResult::default() }; }
+        LoginFlowResult { ok: true, name: Some(slot), email, error: None }
+    }
+
+    async fn exchange_authorization_code(&self, code: &str, state: &str, verifier: &str) -> Result<Value, String> {
+        let body = serde_json::json!({"grant_type":"authorization_code","code":code,"state":state,"client_id":CLIENT_ID,"redirect_uri":LOGIN_REDIRECT,"code_verifier":verifier});
+        let response = self.transport.request(HttpRequest { method: "POST".into(), url: REFRESH_URL.into(), headers: std::collections::HashMap::from([(String::from("Content-Type"), String::from("application/json"))]), body: Some(body.to_string()) }).await.map_err(|error| error.to_string())?;
+        if !(200..300).contains(&response.status) { return Err(format!("token exchange failed: HTTP {}", response.status)); }
+        response.body.ok_or_else(|| "token exchange returned invalid JSON".into())
+    }
+}
+
+fn wait_for_callback(state: &str) -> Result<String, String> {
+    let listener = TcpListener::bind(("127.0.0.1", LOGIN_PORT)).map_err(|error| error.to_string())?;
+    listener.set_nonblocking(true).map_err(|error| error.to_string())?;
+    let deadline = Instant::now() + LOGIN_TIMEOUT;
+    while Instant::now() < deadline {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let mut bytes = [0u8; 8192]; let count = stream.read(&mut bytes).map_err(|error| error.to_string())?;
+                let request = String::from_utf8_lossy(&bytes[..count]);
+                let target = request.lines().next().and_then(|line| line.split_whitespace().nth(1)).unwrap_or("/");
+                let query = target.split_once('?').map(|(_, query)| query).unwrap_or("");
+                let mut code = None; let mut returned_state = None; let mut error = None;
+                for part in query.split('&') { let (key, value) = part.split_once('=').unwrap_or((part, "")); let value = urlencoding::decode(value).map_err(|e| e.to_string())?.into_owned(); match key { "code" => code = Some(value), "state" => returned_state = Some(value), "error" => error = Some(value), _ => {} } }
+                if target.split('?').next() != Some("/callback") { let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"); continue; }
+                if returned_state.as_deref() != Some(state) { let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\nStale login attempt"); continue; }
+                if let Some(error) = error { let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\nLogin denied"); return Err(format!("login denied: {error}")); }
+                let Some(code) = code.filter(|code| !code.is_empty()) else { return Err("no code in callback".into()) };
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\nLogin complete - you can close this tab.");
+                return Ok(code);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(50)),
+            Err(error) => return Err(error.to_string()),
         }
     }
+    Err("login timed out (5 min)".into())
 }
 
 fn iso_to_ms(value: Option<&Value>) -> Option<i64> {
@@ -614,9 +735,10 @@ fn sanitize_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
-    use super::{usage_limit_window, usage_window, ClaudeProvider};
+    use super::{usage_limit_window, usage_window, ClaudeProvider, REFRESH_URL};
     use crate::core::paths::ClaudePaths;
     use crate::core::providers::{HttpFuture, HttpRequest, HttpResponse, HttpTransport, Provider};
     use serde_json::json;
@@ -684,6 +806,29 @@ mod tests {
             Some(10080)
         );
         assert_eq!(usage.fable.expect("fable").used_percent, 2.0);
+    }
+
+    struct LoginFixtureTransport;
+    impl HttpTransport for LoginFixtureTransport {
+        fn request(&self, request: HttpRequest) -> HttpFuture {
+            assert_eq!(request.method, "POST");
+            assert_eq!(request.url, REFRESH_URL);
+            let body = request.body.expect("token request body");
+            assert!(body.contains("authorization-code"));
+            assert!(body.contains("verifier-fixture"));
+            Box::pin(async { Ok(HttpResponse { status: 200, headers: HashMap::new(), body: Some(json!({"access_token":"fake-access","refresh_token":"fake-refresh","expires_in":3600})) }) })
+        }
+    }
+
+    #[tokio::test]
+    async fn authorization_code_exchange_uses_pkce_without_touching_auth_files() {
+        let root = tempdir().expect("tempdir");
+        let paths = ClaudePaths { home: root.path().to_path_buf(), config_dir: root.path().join(".claude"), accounts_root: root.path().join(".claude-accounts") };
+        let provider = ClaudeProvider::new(paths.clone(), Arc::new(LoginFixtureTransport));
+        let response = provider.exchange_authorization_code("authorization-code", "state-fixture", "verifier-fixture").await.expect("token response");
+        assert_eq!(response["access_token"], "fake-access");
+        assert!(!paths.live_credentials_file().exists());
+        assert!(!paths.accounts_root.exists());
     }
 
     #[test]

@@ -11,6 +11,8 @@ use serde_json::Value;
 use tauri::{
     AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu, CheckMenuItem, ContextMenu};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 use crate::core::config::{self, AppConfig};
 use crate::core::providers::claude::ClaudeProvider;
@@ -18,6 +20,7 @@ use crate::core::providers::codex::CodexProvider;
 use crate::core::providers::{Provider, ReqwestTransport};
 use crate::core::switcher;
 use crate::core::types::{LoginFlowResult, PAccount, PUsage, ProviderPrefs};
+use crate::core::platform;
 
 const SHIM: &str = include_str!("../../src/renderer/tauri-shim.js");
 const DEFAULT_WIDGET_BACKGROUND: (u8, u8, u8, u8) = (0x16, 0x17, 0x1b, 0xff);
@@ -50,7 +53,7 @@ impl ProviderSet {
 
     fn all(&self) -> [ProviderEntry; 2] {
         [
-            ("codex", "Codex", false, true, self.codex.clone()),
+            ("codex", "Codex", true, true, self.codex.clone()),
             ("claude", "Claude Code", true, false, self.claude.clone()),
         ]
     }
@@ -70,6 +73,8 @@ struct RuntimeData {
     approval: Option<tokio::sync::oneshot::Sender<bool>>,
     cli_payload: Option<Value>,
     probe_reports: HashMap<String, Value>,
+    widget_context_menu_open: bool,
+    widget_topmost_timer_started: bool,
 }
 
 struct AppState {
@@ -133,6 +138,7 @@ fn broadcast_changed(app: &AppHandle) {
         }
     }
     sync_usage_widget(app);
+    refresh_tray_tooltip(app);
 }
 
 fn provider_info(state: &AppState) -> Vec<ProviderInfo> {
@@ -281,17 +287,19 @@ fn create_window(
     height: f64,
     decorations: bool,
     always_on_top: bool,
+    transparent: bool,
 ) -> Result<WebviewWindow, tauri::Error> {
     let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App(file.into()))
         .title(title)
         .inner_size(width, height)
         .decorations(decorations)
         .always_on_top(always_on_top)
+        .transparent(transparent)
         .background_color(tauri::window::Color(
             DEFAULT_WIDGET_BACKGROUND.0,
             DEFAULT_WIDGET_BACKGROUND.1,
             DEFAULT_WIDGET_BACKGROUND.2,
-            DEFAULT_WIDGET_BACKGROUND.3,
+            if transparent { 0 } else { DEFAULT_WIDGET_BACKGROUND.3 },
         ))
         .initialization_script(if std::env::var_os("LAZYSWITCH_TAURI_PROBE").is_some() {
             format!("{}\n{}", SHIM, probe_script())
@@ -309,7 +317,7 @@ fn open_manager(app: &AppHandle) {
         let _ = window.set_focus();
         return;
     }
-    let _ = create_window(
+    if let Err(error) = create_window(
         app,
         "manager",
         "manager.html",
@@ -318,7 +326,8 @@ fn open_manager(app: &AppHandle) {
         730.0,
         false,
         false,
-    );
+        false,
+    ) { eprintln!("[tauri:manager] {error}"); }
 }
 
 fn open_onboarding(app: &AppHandle) {
@@ -335,6 +344,7 @@ fn open_onboarding(app: &AppHandle) {
         "LazySwitch",
         640.0,
         560.0,
+        false,
         false,
         false,
     ) {
@@ -368,6 +378,7 @@ fn open_widget(app: &AppHandle, force: bool) {
     if let Some(window) = app.get_webview_window("widget") {
         let _ = window.show();
         let _ = window.set_always_on_top(config.usage_widget.always_on_top);
+        apply_widget_platform(app, &window, &config);
         return;
     }
     let (x, y, width, height) = widget_bounds(&config);
@@ -380,8 +391,17 @@ fn open_widget(app: &AppHandle, force: bool) {
         height,
         false,
         config.usage_widget.always_on_top,
+        config.usage_widget.minimized && config.usage_widget.compact_position == "taskbar",
     ) {
         Ok(window) => {
+            let app_for_theme = app.clone();
+            window.on_window_event(move |event| {
+                if matches!(event, WindowEvent::ThemeChanged(_)) {
+                    let state = app_for_theme.state::<AppState>();
+                    let config = state_config(&state);
+                    if let Some(widget) = app_for_theme.get_webview_window("widget") { emit_widget_taskbar_theme(&app_for_theme, &widget, &config); }
+                }
+            });
             if config.usage_widget.minimized
                 && config.usage_widget.x.is_none()
                 && config.usage_widget.y.is_none()
@@ -400,10 +420,93 @@ fn open_widget(app: &AppHandle, force: bool) {
             } else if config.usage_widget.x.is_some() || config.usage_widget.y.is_some() {
                 set_window_bounds(&window, x, y, width, height);
             }
-            emit_to(app, "widget", "widget:taskbar-theme", Value::Null);
+            apply_widget_platform(app, &window, &config);
+            emit_widget_taskbar_theme(app, &window, &config);
         }
         Err(error) => eprintln!("[tauri:widget] {error}"),
     }
+}
+
+fn emit_widget_taskbar_theme(app: &AppHandle, _window: &WebviewWindow, config: &AppConfig) {
+    if config.usage_widget.minimized && config.usage_widget.compact_position == "taskbar" {
+        emit_to(app, "widget", "widget:taskbar-theme", platform::taskbar_theme().map(|light| serde_json::json!({"light": light})).unwrap_or_else(|| serde_json::json!({"light": false})));
+    } else {
+        emit_to(app, "widget", "widget:taskbar-theme", Value::Null);
+    }
+}
+
+fn apply_widget_platform(app: &AppHandle, window: &WebviewWindow, config: &AppConfig) {
+    let compact = config.usage_widget.minimized;
+    let _ = window.set_resizable(!compact);
+    #[cfg(windows)] {
+        if let Ok(hwnd) = window.hwnd() {
+            let scale = window.scale_factor().unwrap_or(1.0);
+            let size = window.outer_size().unwrap_or(tauri::PhysicalSize::new(
+                (WIDGET_COMPACT_WIDTH * scale).round() as u32,
+                (WIDGET_COMPACT_DEFAULT_HEIGHT * scale).round() as u32,
+            ));
+            let width = size.width as i32;
+            let height = size.height as i32;
+            let hwnd_value = hwnd.0 as isize;
+            if compact {
+                if let Some(bounds) = platform::compact_bounds(hwnd_value, width, height, &config.usage_widget.compact_position) {
+                    platform::set_bounds(hwnd_value, bounds, config.usage_widget.always_on_top);
+                }
+                if config.usage_widget.compact_position == "taskbar" && config.usage_widget.always_on_top {
+                    start_widget_topmost_timer(app.clone());
+                }
+            } else if let (Some(x), Some(y)) = (config.usage_widget.x, config.usage_widget.y) {
+                let bounds = platform::Rect { left: x.round() as i32, top: y.round() as i32, right: (x + config.usage_widget.width).round() as i32, bottom: (y + config.usage_widget.height).round() as i32 };
+                platform::set_bounds(hwnd_value, bounds, config.usage_widget.always_on_top);
+            }
+            let should_layer = compact && config.usage_widget.compact_position == "taskbar";
+            platform::set_layered(hwnd_value, should_layer);
+            if platform::is_layered(hwnd_value) != should_layer {
+                eprintln!("[widget] transparency style did not match requested state");
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn start_widget_topmost_timer(app: AppHandle) {
+    let should_start = app
+        .state::<AppState>()
+        .runtime
+        .lock()
+        .map(|mut runtime| {
+            if runtime.widget_topmost_timer_started { false } else {
+                runtime.widget_topmost_timer_started = true;
+                true
+            }
+        })
+        .unwrap_or(false);
+    if !should_start { return; }
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(100));
+        let Some(window) = app.get_webview_window("widget") else {
+            if let Ok(mut runtime) = app.state::<AppState>().runtime.lock() { runtime.widget_topmost_timer_started = false; }
+            break
+        };
+        let state = app.state::<AppState>();
+        let config = state_config(&state);
+        let paused = state.runtime.lock().map(|runtime| runtime.widget_context_menu_open).unwrap_or(false);
+        if !config.usage_widget.minimized || config.usage_widget.compact_position != "taskbar" || !config.usage_widget.always_on_top {
+            if let Ok(mut runtime) = state.runtime.lock() { runtime.widget_topmost_timer_started = false; }
+            break;
+        }
+        if paused { continue; }
+        if let Ok(hwnd) = window.hwnd() {
+            let value = hwnd.0 as isize;
+            // Dispatch the Win32 z-order operation on the windowing thread.
+            // Direct calls from the timer worker return success but do not
+            // reorder WebView2 relative to Shell_TrayWnd on this build.
+            let _ = app.run_on_main_thread(move || {
+                platform::set_topmost(value, true);
+                if std::env::var_os("LAZYSWITCH_TAURI_PROBE").is_some() { eprintln!("[probe:topmost] reasserted"); }
+            });
+        }
+    });
 }
 
 fn open_widget_settings(app: &AppHandle) {
@@ -412,7 +515,7 @@ fn open_widget_settings(app: &AppHandle) {
         let _ = window.set_focus();
         return;
     }
-    let _ = create_window(
+    if let Err(error) = create_window(
         app,
         "widget-settings",
         "widget-settings.html",
@@ -421,7 +524,8 @@ fn open_widget_settings(app: &AppHandle) {
         400.0,
         false,
         true,
-    );
+        false,
+    ) { eprintln!("[tauri:widget-settings] {error}"); }
 }
 
 fn sync_usage_widget(app: &AppHandle) {
@@ -641,7 +745,8 @@ async fn handle_limit(app: AppHandle, provider_id: String, usage: PUsage) {
                 "[limit:{provider_id}] switched {:?} -> {}",
                 result.from, result.to
             );
-            eprintln!("[limit:{provider_id}] TODO(phase-5): desktop restart is deferred");
+            let desktop_restarted = if prefs.auto_approve { provider.desktop_restart(&prefs).await } else { false };
+            if desktop_restarted { eprintln!("[limit:{provider_id}] desktop restarted"); }
             eprintln!("[limit:{provider_id}] TODO(phase-6): CLI handover is deferred");
             notify(
                 &app,
@@ -711,7 +816,8 @@ fn probe_script() -> String {
             const lists = {};
             for (const provider of providers) lists[provider.id] = await window.rotator.list(provider.id);
             await new Promise(resolve => setTimeout(resolve, 250));
-            report.call = { config, providers, lists, renderMode: document.body.classList.contains('compact') ? 'compact' : 'normal', rendered: document.body.innerText.length > 0 };
+            const windows = await window.__TAURI__.core.invoke('probe:windows');
+            report.call = { config, providers, lists, windows, renderMode: document.body.classList.contains('compact') ? 'compact' : 'normal', bodyBackground: getComputedStyle(document.body).backgroundColor, rendered: document.body.innerText.length > 0 };
           } else if (page === 'widget-settings.html') {
             const config = await window.rotator.getConfig();
             const providers = await window.rotator.providers();
@@ -741,13 +847,14 @@ fn open_probe_windows(app: &AppHandle) {
 
 fn open_external(url: &str) -> Result<(), String> {
     #[cfg(windows)]
-    let result = std::process::Command::new("cmd")
-        .args(["/C", "start", "", url])
-        .spawn();
+    return platform::open_url(url);
     #[cfg(target_os = "macos")]
     let result = std::process::Command::new("open").arg(url).spawn();
     #[cfg(all(unix, not(target_os = "macos")))]
     let result = std::process::Command::new("xdg-open").arg(url).spawn();
+    #[cfg(not(any(windows, target_os = "macos", unix)))]
+    let result: Result<std::process::Child, std::io::Error> = Err(std::io::Error::other("unsupported platform"));
+    #[cfg(not(windows))]
     result.map(|_| ()).map_err(|error| error.to_string())
 }
 
@@ -789,13 +896,14 @@ async fn accounts_switch(
     };
     match switcher::switch_to(account_provider.as_ref(), &name, &prefs, false).await {
         Ok(_) => {
-            eprintln!("[accounts:switch] TODO(phase-5): desktop restart is deferred");
+            let desktop_restarted = account_provider.desktop_restart(&prefs).await;
+            if desktop_restarted { eprintln!("[accounts:switch] desktop restarted"); }
             eprintln!("[accounts:switch] TODO(phase-6): CLI handover is deferred");
             broadcast_changed(&app);
             notify(
                 &app,
                 format!("{provider} switched"),
-                format!("{name} is now active"),
+                format!("{name} is now active{}", if desktop_restarted { " (desktop restarted)" } else { "" }),
             );
             Ok(OperationResult {
                 ok: true,
@@ -962,18 +1070,17 @@ fn accounts_import_current(
 
 #[tauri::command(rename = "accounts:addViaLogin")]
 async fn accounts_add_via_login(
+    app: AppHandle,
     state: tauri::State<'_, AppState>,
     provider: String,
 ) -> Result<LoginFlowResult, String> {
-    eprintln!("[accounts:addViaLogin] TODO(phase-4b): interactive browser login is deferred");
-    if provider == "claude" {
-        return Ok(state.providers.claude.add_via_login().await);
+    let app_for_url = app.clone();
+    let on_url: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |url| emit_to(&app_for_url, "manager", "login:url", url));
+    match provider.as_str() {
+        "claude" => Ok(state.providers.claude.add_via_login_with_callback(Some(on_url)).await),
+        "codex" => Ok(state.providers.codex.add_via_login_with_callback(Some(on_url)).await),
+        _ => Ok(LoginFlowResult { ok: false, error: Some("unsupported".into()), ..LoginFlowResult::default() }),
     }
-    Ok(LoginFlowResult {
-        ok: false,
-        error: Some("TODO(phase-4b): login flow is deferred".into()),
-        ..LoginFlowResult::default()
-    })
 }
 
 #[tauri::command(rename = "cli:testRestart")]
@@ -1004,6 +1111,7 @@ fn config_set(
     state: tauri::State<'_, AppState>,
     patch: Value,
 ) -> Result<AppConfig, String> {
+    let previous = state_config(&state);
     let mut current =
         serde_json::to_value(state_config(&state)).map_err(|error| error.to_string())?;
     let Some(patch_object) = patch.as_object() else {
@@ -1035,15 +1143,21 @@ fn config_set(
     if let Ok(mut config) = state.config.lock() {
         *config = next.clone();
     }
-    if let Some(widget) = app.get_webview_window("widget") {
-        let _ = widget.set_always_on_top(next.usage_widget.always_on_top);
+    #[cfg(windows)]
+    if previous.launch_at_login != next.launch_at_login {
+        if let Ok(exe) = std::env::current_exe() { platform::apply_launch_at_login(next.launch_at_login, &exe).map_err(|error| format!("start at login: {error}"))?; }
     }
-    if next.usage_widget.minimized {
-        if let Some(widget) = app.get_webview_window("widget") {
-            let _ = widget.set_size(tauri::PhysicalSize::new(
-                WIDGET_COMPACT_WIDTH as u32,
-                WIDGET_COMPACT_DEFAULT_HEIGHT as u32,
-            ));
+    let previous_transparent = previous.usage_widget.minimized && previous.usage_widget.compact_position == "taskbar";
+    let next_transparent = next.usage_widget.minimized && next.usage_widget.compact_position == "taskbar";
+    if let Some(widget) = app.get_webview_window("widget") {
+        if previous_transparent != next_transparent {
+            let _ = widget.destroy();
+            let app_for_recreate = app.clone();
+            tauri::async_runtime::spawn(async move { tokio::time::sleep(Duration::from_millis(100)).await; open_widget(&app_for_recreate, true); });
+        } else {
+            let _ = widget.set_always_on_top(next.usage_widget.always_on_top);
+            apply_widget_platform(&app, &widget, &next);
+            emit_widget_taskbar_theme(&app, &widget, &next);
         }
     }
     sync_usage_widget(&app);
@@ -1099,7 +1213,7 @@ fn widget_settings_close(app: AppHandle) {
 }
 
 #[tauri::command(rename = "widget:compact-height")]
-fn widget_compact_height(window: WebviewWindow, state: tauri::State<'_, AppState>, height: f64) {
+fn widget_compact_height(app: AppHandle, window: WebviewWindow, state: tauri::State<'_, AppState>, height: f64) {
     if window.label() != "widget" || !state_config(&state).usage_widget.minimized {
         return;
     }
@@ -1108,6 +1222,7 @@ fn widget_compact_height(window: WebviewWindow, state: tauri::State<'_, AppState
         WIDGET_COMPACT_WIDTH as u32,
         next as u32,
     ));
+    apply_widget_platform(&app, &window, &state_config(&state));
 }
 
 #[tauri::command(rename = "approval:respond")]
@@ -1189,6 +1304,23 @@ fn probe_enabled() -> bool {
     std::env::var_os("LAZYSWITCH_TAURI_PROBE").is_some()
 }
 
+#[tauri::command(rename = "probe:windows")]
+async fn probe_windows(app: AppHandle) -> Value {
+    #[cfg(windows)]
+    {
+        let value = app
+            .get_webview_window("widget")
+            .and_then(|window| window.hwnd().ok())
+            .map(|hwnd| hwnd.0 as isize);
+        if let Some(value) = value {
+            return tauri::async_runtime::spawn_blocking(move || platform::widget_probe(value, true))
+                .await
+                .unwrap_or_else(|_| serde_json::json!({}));
+        }
+    }
+    serde_json::json!({})
+}
+
 #[tauri::command(rename = "probe:report")]
 fn probe_report(app: AppHandle, state: tauri::State<'_, AppState>, page: String, report: String) {
     let path = std::env::var_os("LAZYSWITCH_TAURI_PROBE");
@@ -1236,8 +1368,129 @@ fn build_state() -> AppState {
     }
 }
 
+#[tauri::command(rename = "widget:context-menu")]
+fn widget_context_menu(app: AppHandle) {
+    show_widget_context_menu(&app);
+}
+
+fn tray_lang(state: &AppState) -> core::i18n::Lang {
+    let config = state_config(state);
+    core::i18n::resolve_lang(&config.language, std::env::var("LANG").ok().as_deref())
+}
+
+fn tray_text(state: &AppState, key: &str, vars: &[(&str, String)]) -> String {
+    let vars = vars.iter().map(|(key, value)| ((*key).to_owned(), value.clone())).collect::<HashMap<_, _>>();
+    core::i18n::t(tray_lang(state), key, Some(&vars))
+}
+
+fn refresh_tray_tooltip(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let mut active = Vec::new();
+    for (id, display, _, _, provider) in state.providers.all() {
+        if let Some(name) = provider.active_account_name() { active.push(format!("{display}: {name}")); }
+        let _ = id;
+    }
+    let name = if active.is_empty() { "LazySwitch".into() } else { active.join(" · ") };
+    let tooltip = tray_text(&state, "tray.tooltip", &[("name", name)]);
+    if let Some(tray) = app.tray_by_id("main") { let _ = tray.set_tooltip(Some(tooltip)); }
+}
+
+fn build_tray_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, String> {
+    let state = app.state::<AppState>();
+    let config = state_config(&state);
+    let menu = Menu::new(app).map_err(|e| e.to_string())?;
+    let manage = MenuItem::with_id(app, "tray.manage", tray_text(&state, "tray.manage", &[]), true, None::<&str>).map_err(|e| e.to_string())?;
+    let tutorial = MenuItem::with_id(app, "tray.tutorial", tray_text(&state, "tray.tutorial", &[]), true, None::<&str>).map_err(|e| e.to_string())?;
+    let auto = CheckMenuItem::with_id(app, "tray.autoApprove", tray_text(&state, "tray.autoApprove", &[]), true, config.codex.auto_approve, None::<&str>).map_err(|e| e.to_string())?;
+    let codex_cli = CheckMenuItem::with_id(app, "tray.autoRestartCli.codex", tray_text(&state, "tray.autoRestartCli", &[("provider", "Codex".into())]), true, config.codex.auto_restart_cli, None::<&str>).map_err(|e| e.to_string())?;
+    let claude_cli = CheckMenuItem::with_id(app, "tray.autoRestartCli.claude", tray_text(&state, "tray.autoRestartCli", &[("provider", "Claude Code".into())]), true, config.claude.auto_restart_cli, None::<&str>).map_err(|e| e.to_string())?;
+    let widget = CheckMenuItem::with_id(app, "tray.usageWidget", tray_text(&state, "tray.usageWidget", &[]), true, config.usage_widget.enabled, None::<&str>).map_err(|e| e.to_string())?;
+    let login = CheckMenuItem::with_id(app, "tray.startAtLogin", tray_text(&state, "tray.startAtLogin", &[]), true, config.launch_at_login, None::<&str>).map_err(|e| e.to_string())?;
+    let language = Submenu::with_id(app, "tray.language", tray_text(&state, "tray.language", &[]), true).map_err(|e| e.to_string())?;
+    for (id, value, label) in [("system", "", "tray.langSystem"), ("ko", "ko", "한국어"), ("en", "en", "English"), ("ja", "ja", "日本語"), ("zh", "zh", "中文")] {
+        let item = CheckMenuItem::with_id(app, format!("tray.language.{id}"), if label.starts_with("tray.") { tray_text(&state, label, &[]) } else { label.into() }, true, config.language == value, None::<&str>).map_err(|e| e.to_string())?;
+        language.append(&item).map_err(|e| e.to_string())?;
+    }
+    let separator = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
+    let quit = MenuItem::with_id(app, "tray.quit", tray_text(&state, "tray.quit", &[]), true, None::<&str>).map_err(|e| e.to_string())?;
+    for item in [&manage as &dyn tauri::menu::IsMenuItem<tauri::Wry>, &tutorial, &auto, &codex_cli, &claude_cli, &widget, &login, &language, &separator, &quit] { menu.append(item).map_err(|e| e.to_string())?; }
+    Ok(menu)
+}
+
+fn set_widget_context_menu_open(app: &AppHandle, value: bool) {
+    if let Ok(mut runtime) = app.state::<AppState>().runtime.lock() { runtime.widget_context_menu_open = value; }
+}
+
+fn update_app_config(app: &AppHandle, update: impl FnOnce(&mut AppConfig)) {
+    let state = app.state::<AppState>();
+    if let Ok(mut config) = state.config.lock() {
+        update(&mut config);
+        let _ = config::save_config(&config);
+    };
+}
+
+fn show_widget_context_menu(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("widget") else { return; };
+    let config = state_config(&app.state::<AppState>());
+    if !config.usage_widget.minimized { return; }
+    let Ok(menu) = (|| -> Result<Menu<tauri::Wry>, String> {
+        let menu = Menu::new(app).map_err(|e| e.to_string())?;
+        let state = app.state::<AppState>();
+        let settings = MenuItem::with_id(app, "widget.settings", tray_text(&state, "widget.settings", &[]), true, None::<&str>).map_err(|e| e.to_string())?;
+        let maximize = MenuItem::with_id(app, "widget.maximize", tray_text(&state, "widget.maximize", &[]), true, None::<&str>).map_err(|e| e.to_string())?;
+        let close = MenuItem::with_id(app, "widget.close", tray_text(&state, "widget.close", &[]), true, None::<&str>).map_err(|e| e.to_string())?;
+        menu.append(&settings).map_err(|e| e.to_string())?; menu.append(&maximize).map_err(|e| e.to_string())?; menu.append(&close).map_err(|e| e.to_string())?;
+        Ok(menu)
+    })() else { return };
+    set_widget_context_menu_open(app, true);
+    let _ = menu.popup(window.as_ref().window());
+    set_widget_context_menu_open(app, false);
+}
+
+fn tray_menu_action(app: &AppHandle, id: &str) {
+    match id {
+        "tray.manage" => open_manager(app),
+        "tray.tutorial" => open_onboarding(app),
+        "tray.usageWidget" => {
+            let state = app.state::<AppState>(); if let Ok(mut config) = state.config.lock() { config.usage_widget.enabled = !config.usage_widget.enabled; let _ = config::save_config(&config); } sync_usage_widget(app);
+        }
+        "tray.autoApprove" => update_app_config(app, |config| config.codex.auto_approve = !config.codex.auto_approve),
+        "tray.autoRestartCli.codex" | "tray.autoRestartCli.claude" => update_app_config(app, |config| if id.ends_with("codex") { config.codex.auto_restart_cli = !config.codex.auto_restart_cli; } else { config.claude.auto_restart_cli = !config.claude.auto_restart_cli; }),
+        "tray.startAtLogin" => { update_app_config(app, |config| config.launch_at_login = !config.launch_at_login); #[cfg(windows)] if let Ok(exe) = std::env::current_exe() { let _ = platform::apply_launch_at_login(state_config(&app.state::<AppState>()).launch_at_login, &exe); } }
+        "tray.quit" => app.exit(0),
+        id if id.starts_with("tray.language.") => { let value = id.rsplit('.').next().unwrap_or(""); let value = if value == "system" { "" } else { value }; update_app_config(app, |config| config.language = value.into()); }
+        "widget.settings" => open_widget_settings(app),
+        "widget.maximize" => { let state = app.state::<AppState>(); if let Ok(mut config) = state.config.lock() { config.usage_widget.minimized = false; let _ = config::save_config(&config); } open_widget(app, true); }
+        "widget.close" => widget_close(app.clone(), app.state::<AppState>()),
+        _ => {}
+    }
+}
+
+fn show_tray_menu(app: &AppHandle, rect: tauri::Rect) {
+    let Ok(menu) = build_tray_menu(app) else { return };
+    #[cfg(windows)] {
+        let (left, top) = match rect.position { tauri::Position::Physical(p) => (p.x, p.y), tauri::Position::Logical(p) => (p.x as i32, p.y as i32) };
+        let (width, height) = match rect.size { tauri::Size::Physical(s) => (s.width as i32, s.height as i32), tauri::Size::Logical(s) => (s.width as i32, s.height as i32) };
+        let icon = platform::Rect { left, top, right: left + width, bottom: top + height };
+        let widget = app.get_webview_window("widget").and_then(|window| window.hwnd().ok()).and_then(|hwnd| platform::rect(hwnd.0 as isize));
+        if let Some((x, y)) = platform::tray_menu_position(icon, widget) {
+            let anchor = app.get_webview_window("manager").or_else(|| app.get_webview_window("onboarding")).or_else(|| app.get_webview_window("widget"));
+            if let Some(anchor) = anchor {
+                if let Ok(position) = anchor.outer_position() {
+                    let _ = menu.popup_at(anchor.as_ref().window(), tauri::PhysicalPosition::new(x - position.x, y - position.y));
+                }
+            } else if let Ok(hwnd) = menu.hpopupmenu() {
+                unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::TrackPopupMenu(windows::Win32::UI::WindowsAndMessaging::HMENU(hwnd as *mut _), windows::Win32::UI::WindowsAndMessaging::TPM_LEFTALIGN | windows::Win32::UI::WindowsAndMessaging::TPM_TOPALIGN, x, y, Some(0), windows::Win32::Foundation::HWND(std::ptr::null_mut()), None); }
+            }
+            return;
+        }
+    }
+    if let Some(anchor) = app.get_webview_window("manager").or_else(|| app.get_webview_window("onboarding")).or_else(|| app.get_webview_window("widget")) { let _ = menu.popup(anchor.as_ref().window()); }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if !platform::acquire_single_instance() { return; }
     tauri::Builder::default()
         .manage(build_state())
         .invoke_handler(tauri::generate_handler![
@@ -1259,6 +1512,7 @@ pub fn run() {
             widget_close,
             widget_settings_close,
             widget_compact_height,
+            widget_context_menu,
             approval_respond,
             cli_restart_payload,
             cli_restart_respond,
@@ -1267,12 +1521,36 @@ pub fn run() {
             app_notify_dismiss,
             start_dragging,
             probe_enabled,
+            probe_windows,
             probe_report
         ])
         .setup(move |app| {
+            let icon = app.default_window_icon().cloned().ok_or_else(|| "default tray icon is unavailable".to_owned())?;
+            TrayIconBuilder::with_id("main")
+                .icon(icon)
+                .tooltip("LazySwitch")
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| tray_menu_action(app, event.id().as_ref()))
+                .on_tray_icon_event(|tray, event| {
+                    let app = tray.app_handle();
+                    match event {
+                        TrayIconEvent::DoubleClick { .. } => open_manager(app),
+                        TrayIconEvent::Click { button: MouseButton::Right, button_state: MouseButtonState::Down, rect, .. } => show_tray_menu(app, rect),
+                        _ => {}
+                    }
+                })
+                .build(app)?;
+            refresh_tray_tooltip(app.handle());
             // The probe is appended to the same initialization script so it
             // observes the real page and the real rotator surface.
             let state = app.state::<AppState>();
+            if std::env::var_os("LAZYSWITCH_PROBE_TASKBAR").is_some() {
+                if let Ok(mut config) = state.config.lock() {
+                    config.usage_widget.minimized = true;
+                    config.usage_widget.compact_position = "taskbar".into();
+                    config.usage_widget.always_on_top = true;
+                }
+            }
             let config = state_config(&state);
             if !config.onboarded {
                 open_onboarding(app.handle());
@@ -1287,11 +1565,19 @@ pub fn run() {
                 open_manager(app.handle());
             }
             sync_usage_widget(app.handle());
+            #[cfg(windows)]
+            if std::env::var_os("LAZYSWITCH_TAURI_PROBE").is_none() {
+                if let Ok(exe) = std::env::current_exe() { let _ = platform::apply_launch_at_login(state_config(&state).launch_at_login, &exe); }
+            }
             start_monitors(app.handle());
             if std::env::var_os("LAZYSWITCH_TAURI_PROBE").is_some() {
                 // Make the four requested windows observable without changing
                 // the user's saved configuration or account store.
-                open_probe_windows(app.handle());
+                let probe_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    open_probe_windows(&probe_app);
+                });
             }
             Ok(())
         })
