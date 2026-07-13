@@ -55,14 +55,18 @@ When reinstalling over an existing installation, the installer asks whether to d
 
 Windows SmartScreen will warn about an unsigned app. *More info → Run anyway*.
 
+The measured installer is **3.5 MB**, and the installed app uses **18 MB**. Installation takes **~2.3 s** silently, or **~2.8 s** when reinstalling over a running copy. A status-line cold start takes **~37 ms**. WebView2 is required; it is present by default on Windows 11 and current Windows 10.
+
 ### Or Build It Yourself
+
+LazySwitch is a Tauri v2 app: Rust contains the app, shared core, and native CLI, while the HTML/CSS/JS UI in `src/renderer/` is served through WebView2. The renderer API is rebuilt by `src/renderer/tauri-shim.js`. The Rust sources live in `src-tauri/`, including the shared core in `src-tauri/src/core/` and the CLI in `src-tauri/src/bin/lazyswitch-cli.rs`.
 
 ```powershell
 git clone https://github.com/datell1357/LazySwitch.git
 cd LazySwitch
-npm install
-npm start        # build + launch the tray app
-npm run dist     # build an installer into release/
+cd src-tauri
+cargo tauri build # build the NSIS installer
+cargo test        # run the Rust test suite
 ```
 
 ---
@@ -163,6 +167,7 @@ Sessions living in an **Orca** tab reopen as a new Orca tab, and never spill a d
 **Required**
 
 - Windows 10 / 11
+- WebView2 — present by default on Windows 11 and current Windows 10
 - Two or more accounts enrolled for whichever provider you want rotated
 
 **Optional**
@@ -170,7 +175,7 @@ Sessions living in an **Orca** tab reopen as a new Orca tab, and never spill a d
 - Codex Desktop — only if you want it restarted on a switch
 - Windows Terminal — used for reopened sessions when present; a PowerShell window is the fallback
 - Orca — Orca-hosted sessions reopen as Orca tabs
-- Node.js 18+ — only to build from source
+- Rust toolchain and the Tauri CLI — only to build from source
 
 **Not needed**
 
@@ -197,17 +202,18 @@ Open **Manage accounts…** from the tray and use **Options**, or edit `%APPDATA
 
 ## Command Line
 
-The tray app is the whole product, but the same numbers are available from a terminal:
+The tray app is the whole product, but the same numbers are available from a terminal. The native `lazyswitch-cli.exe` is installed next to the app at `%LOCALAPPDATA%\LazySwitch\lazyswitch-cli.exe`; run it from that directory as `lazyswitch-cli.exe`, or use the full path:
 
-```bash
-lazyswitch status                    # print the account usage table once
-lazyswitch watch --interval 30       # keep the table on screen
-lazyswitch statusline                # one compact line per account
-lazyswitch statusline claude         # …for a single provider
-lazyswitch install-hooks             # Claude statusLine + Codex built-ins
+```powershell
+lazyswitch-cli.exe status                    # print the account usage table once
+lazyswitch-cli.exe watch --interval 30       # keep the table on screen
+lazyswitch-cli.exe statusline all            # one compact line per account
+lazyswitch-cli.exe statusline codex          # for one provider
+lazyswitch-cli.exe statusline claude         # for one provider
+lazyswitch-cli.exe install-hooks             # Claude statusLine + Codex [tui] keys
 ```
 
-`install-hooks` puts the usage line into Claude Code's status bar, so you can see the window burning down without leaving the CLI.
+The commands are `status`, `watch [--interval N]`, `statusline [codex|claude|all]`, and `install-hooks`. The CLI is a native binary with no separate runtime dependency. `install-hooks` points Claude Code's `statusLine` at this binary and writes the Codex `[tui]` keys, backing up both settings files first.
 
 `statusline` prints one line per account, using the name you gave the slot (not its e-mail), its state, and fixed-width `5H` / `Week` / `Fable` gauges. The active account of each provider is listed first; Codex lines omit `Fable`. It adapts to the terminal width and drops reset-time text when the terminal is narrow.
 
@@ -217,11 +223,11 @@ Claude Pro ACT 5H [  31% 2h47m ] Week [  90% 2h47m ] Fable [  99% 2h47m ]
 Codex Pro  ACT 5H [   4% 6d0h  ] Week [   0% 6d0h  ]
 ```
 
-From a source checkout, before installing:
+From a source checkout, run the CLI directly with Cargo:
 
-```bash
-npm run build
-node dist/main/cli.js status
+```powershell
+cd src-tauri
+cargo run --bin lazyswitch-cli -- status
 ```
 
 ---

@@ -3,6 +3,7 @@
 pub mod core;
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -866,6 +867,26 @@ fn open_external(url: &str) -> Result<(), String> {
     result.map(|_| ()).map_err(|error| error.to_string())
 }
 
+fn install_cli_hooks_on_launch() {
+    let Ok(app_exe) = std::env::current_exe() else {
+        eprintln!("[hooks] unable to resolve the LazySwitch executable path");
+        return;
+    };
+    let cli = app_exe
+        .parent()
+        .map(|parent| parent.join("lazyswitch-cli.exe"))
+        .unwrap_or_else(|| std::path::PathBuf::from("lazyswitch-cli.exe"));
+    if !cli.is_file() {
+        eprintln!("[hooks] installed CLI is missing: {}", cli.display());
+        return;
+    }
+    match Command::new(&cli).arg("install-hooks").status() {
+        Ok(status) if status.success() => eprintln!("[hooks] installed via {}", cli.display()),
+        Ok(status) => eprintln!("[hooks] CLI exited with {status} ({})", cli.display()),
+        Err(error) => eprintln!("[hooks] failed to run {}: {error}", cli.display()),
+    }
+}
+
 fn cli_sessions_for(provider: &str) -> Vec<CliSession> {
     cli_sessions::detect_cli_sessions(provider, std::process::id())
 }
@@ -1650,6 +1671,7 @@ pub fn run() {
                 })
                 .build(app)?;
             refresh_tray_tooltip(app.handle());
+            install_cli_hooks_on_launch();
             // The probe is appended to the same initialization script so it
             // observes the real page and the real rotator surface.
             let state = app.state::<AppState>();

@@ -3,6 +3,7 @@
   "productName": "LazySwitch",
   "version": "0.1.1",
   "identifier": "com.local.lazyswitch",
+  "mainBinaryName": "lazyswitch",
   "build": {
     "frontendDist": "../src/renderer"
   },
@@ -16,6 +17,12 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"]
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "nsis/installer-hooks.nsh"
+      }
+    }
   }
 }
