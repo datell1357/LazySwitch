@@ -1,0 +1,521 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <style>
+      :root {
+        --bg: #16171b; --card: #1e2026; --line: #2c2f38;
+        --text: #e8e9ec; --muted: #9aa0ac;
+        --accent: #10a37f; --accent-hi: #14c493;
+        --claude: #d97757;
+        --gauge-green: #3ecf6a; --gauge-amber: #e8b13f; --gauge-red: #e5534b;
+        --active-ring: #c66a3d;
+      }
+      * { box-sizing: border-box; }
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: #2c2f38; border-radius: 6px; }
+      html, body {
+        margin: 0; width: 100%; height: 100%;
+        background: var(--bg); color: var(--text);
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        overflow: hidden;
+      }
+      .titlebar {
+        height: 30px; display: flex; align-items: center; justify-content: space-between;
+        padding: 0 6px 0 10px; background: #101216; border-bottom: 1px solid var(--line);
+        -webkit-app-region: drag; user-select: none;
+      }
+      body.compact .titlebar { display: none; }
+      .tb-title { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700; color: var(--muted); }
+      .tb-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent-hi); }
+      .tb-close {
+        -webkit-app-region: no-drag; width: 24px; height: 20px; padding: 0;
+        border: none; background: transparent; color: var(--muted);
+        font-size: 12px; border-radius: 5px; cursor: pointer; line-height: 1;
+      }
+      .tb-close:hover { background: #e5533a; color: #fff; }
+      .tb-actions { display: flex; align-items: center; gap: 2px; }
+      .tb-settings {
+        -webkit-app-region: no-drag; width: 24px; height: 20px; padding: 0;
+        border: none; background: transparent; color: var(--muted);
+        border-radius: 5px; cursor: pointer; line-height: 1;
+      }
+      .tb-settings:hover, .tb-settings.active { background: #2c2f38; color: var(--text); }
+      .tb-minimize {
+        -webkit-app-region: no-drag; width: 24px; height: 20px; padding: 0;
+        border: none; background: transparent; color: var(--muted);
+        border-radius: 5px; cursor: pointer; line-height: 1; font-size: 13px;
+      }
+      .tb-minimize:hover { background: #2c2f38; color: var(--text); }
+
+      .list { height: calc(100% - 30px); overflow-y: auto; padding: 8px; display: grid; gap: 8px; align-content: start; }
+      .list.compact {
+        height: auto; overflow: hidden; padding: 4px 6px 5px; gap: 2px;
+      }
+      .compact-line {
+        min-width: 0; min-height: 14px; display: flex; align-items: center; gap: 5px;
+        font-size: 10px; line-height: 14px;
+      }
+      .compact-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .compact-usage { display: flex; align-items: center; flex: 0 0 69px; gap: 2px; min-width: 0; }
+      .gauge.compact-gauge {
+        flex: 0 0 46px; height: 6px;
+        background: #343b4a; box-shadow: 0 0 0 1px #454d5f inset;
+      }
+      .compact-pct { font-size: 9px; font-weight: 800; white-space: nowrap; }
+      .compact-usage[data-tone="green"] .compact-pct { color: var(--gauge-green); }
+      .compact-usage[data-tone="amber"] .compact-pct { color: var(--gauge-amber); }
+      .compact-usage[data-tone="red"] .compact-pct { color: var(--gauge-red); }
+      .compact-usage[data-tone="green"] .gauge-fill { background: var(--gauge-green); }
+      .compact-usage[data-tone="amber"] .gauge-fill { background: var(--gauge-amber); }
+      .compact-usage[data-tone="red"] .gauge-fill { background: var(--gauge-red); }
+      .settings-panel {
+        height: calc(100% - 30px); overflow-y: auto; padding: 10px 8px;
+        display: grid; gap: 8px; align-content: start;
+      }
+      .settings-panel[hidden], .list[hidden] { display: none; }
+      .settings-heading { font-size: 10px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+      .settings-opt {
+        display: flex; align-items: center; gap: 8px; padding: 8px 9px;
+        background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+        font-size: 11px; cursor: pointer;
+      }
+      .settings-opt input { margin: 0; accent-color: var(--accent); }
+      .settings-notice { color: var(--gauge-amber); font-size: 10px; line-height: 1.35; padding: 0 9px; }
+      .settings-row {
+        display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px;
+        background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+        font-size: 11px;
+      }
+      .settings-select {
+        min-width: 132px; padding: 4px 6px; background: #16171b; border: 1px solid var(--line);
+        color: var(--text); border-radius: 5px; font: inherit; font-size: 11px;
+      }
+      .hidden-account {
+        display: flex; align-items: center; gap: 8px; min-width: 0;
+        padding: 8px 9px; background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+      }
+      .hidden-account-name { min-width: 0; flex: 1; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .account-action {
+        flex-shrink: 0; border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px;
+        background: #252934; color: var(--muted); font: inherit; font-size: 9px; cursor: pointer;
+      }
+      .account-action:hover { border-color: var(--accent); color: var(--text); }
+      .settings-empty { color: var(--muted); font-size: 11px; text-align: center; padding: 20px 0; }
+
+      .acct {
+        background: linear-gradient(180deg, #202329, #1a1d22);
+        border: 1px solid var(--line); border-radius: 10px;
+        padding: 9px 10px 8px;
+      }
+      .acct.active {
+        border-color: var(--active-ring);
+        box-shadow: 0 0 0 1px #c66a3d88 inset;
+        background: linear-gradient(180deg, #251f1b, #1b1d21);
+      }
+      .name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+      .cdot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+      .cdot.codex { background: var(--accent); }
+      .cdot.claude { background: var(--claude); }
+      .acct-name {
+        min-width: 0; font-size: 12px; font-weight: 700;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .active-badge {
+        margin-left: auto; flex-shrink: 0; border-radius: 999px; padding: 1px 7px;
+        font-size: 9px; font-weight: 800; background: #d97757; color: #2a130b;
+      }
+      .hide-account { margin-left: auto; }
+      .active-badge + .hide-account { margin-left: 0; }
+      .usage-stack { margin-top: 7px; display: grid; gap: 5px; }
+      .usage-row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 2px; }
+      .usage-label { font-size: 9px; font-weight: 600; color: #c7cbd2; }
+      .usage-pct { font-size: 9px; font-weight: 800; white-space: nowrap; }
+      .usage-row[data-tone="green"] .usage-pct { color: var(--gauge-green); }
+      .usage-row[data-tone="amber"] .usage-pct { color: var(--gauge-amber); }
+      .usage-row[data-tone="red"] .usage-pct { color: var(--gauge-red); }
+      .gauge { height: 6px; background: #252934; border-radius: 999px; overflow: hidden; }
+      .gauge-fill { display: block; height: 100%; border-radius: 999px; }
+      .usage-row[data-tone="green"] .gauge-fill { background: var(--gauge-green); }
+      .usage-row[data-tone="amber"] .gauge-fill { background: var(--gauge-amber); }
+      .usage-row[data-tone="red"] .gauge-fill { background: var(--gauge-red); }
+      .usage-none { font-size: 10px; color: #6b7280; margin-top: 6px; }
+      .empty { color: var(--muted); font-size: 11px; text-align: center; padding: 20px 0; }
+      .provider-section {
+        display: grid; gap: 6px; padding: 0 5px 5px;
+        background: #1a1c21; border: 1px solid var(--line); border-radius: 11px;
+      }
+      .provider-section-header {
+        display: flex; align-items: center; gap: 7px; min-height: 25px;
+        padding: 5px 5px 0; color: var(--muted); font-size: 10px; font-weight: 800;
+        letter-spacing: .07em; text-transform: uppercase;
+      }
+      .provider-section-header .cdot { width: 8px; height: 8px; }
+      .provider-section-cards { display: grid; gap: 6px; }
+      .provider-section-cards .acct { border-color: #2c2f3888; }
+    </style>
+  </head>
+  <body>
+    <div class="titlebar">
+      <div class="tb-title"><span class="tb-dot"></span><span id="tbTitle">Usage</span></div>
+      <div class="tb-actions">
+        <button class="tb-settings" id="tbSettings" aria-label="Settings" title="Settings">
+          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M19.43 12.98c.04-.32.07-.65.07-.98s-.02-.66-.07-.98l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.61-.22l-2.49 1a7.35 7.35 0 0 0-1.69-.98L14.5 2.42A.49.49 0 0 0 14.01 2h-4a.5.5 0 0 0-.49.42L9.14 5.07c-.6.25-1.16.58-1.69.98l-2.49-1a.5.5 0 0 0-.61.22l-2 3.46a.5.5 0 0 0 .12.64l2.11 1.65c-.04.32-.08.65-.08.98s.03.66.08.98l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46c.14.24.42.34.68.22l2.49-1c.52.4 1.09.73 1.69.98l.38 2.65c.04.28.28.49.56.49h4c.28 0 .52-.21.56-.49l.38-2.65c.6-.25 1.17-.58 1.69-.98l2.49 1c.26.1.54.02.68-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"/></svg>
+        </button>
+        <button class="tb-minimize" id="tbMinimize" aria-label="Minimize" title="Minimize">–</button>
+        <button class="tb-close" id="tbClose" aria-label="Close">&#x2715;</button>
+      </div>
+    </div>
+    <div class="settings-panel" id="settingsPanel" hidden></div>
+    <div class="list" id="list"></div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+
+      const DICTS = {
+        en: {
+          title: "Usage",
+          usagePrimary: "Current session (5h)",
+          usageMonthly: "Monthly limit",
+          usageWeeklyAll: "Weekly · All models",
+          usageFable: "Weekly · Fable",
+          usedPct: "{n}% used",
+          resetsIn: "resets in {rel}",
+          usageNone: "Usage unavailable",
+          empty: "No accounts yet.",
+          settings: "Hidden accounts",
+          activeBadge: "Active",
+          alwaysOnTop: "Always on top",
+          alwaysOnTopTaskbarNotice: "With always-on-top off, the taskbar would cover the widget, so the minimized position has been changed to bottom right.",
+          minimizedPosition: "Minimized position",
+          taskbar: "On the taskbar (next to clock)",
+          bottomRight: "Bottom right",
+          bottomLeft: "Bottom left",
+          settingsEmpty: "No hidden accounts.",
+          settingsButton: "Settings",
+          minimize: "Minimize",
+          restore: "Restore",
+          hide: "Hide",
+          show: "Show",
+        },
+        ko: {
+          title: "사용량",
+          usagePrimary: "현재 세션 (5h)",
+          usageMonthly: "월간 한도",
+          usageWeeklyAll: "주간 · 모든 모델",
+          usageFable: "주간 · Fable",
+          usedPct: "{n}% 사용됨",
+          resetsIn: "{rel} 후 리셋",
+          usageNone: "사용량 조회 불가",
+          empty: "등록된 계정이 없습니다.",
+          settings: "숨긴 계정",
+          activeBadge: "사용중",
+          alwaysOnTop: "항상 위에 표시",
+          alwaysOnTopTaskbarNotice: "항상 위에 표시를 끄면 작업표시줄에 가려지므로, 최소화 위치를 우측 하단으로 자동 변경합니다.",
+          minimizedPosition: "최소화 위치",
+          taskbar: "작업표시줄 (시계 옆)",
+          bottomRight: "우측 하단",
+          bottomLeft: "좌측 하단",
+          settingsEmpty: "숨긴 계정이 없습니다.",
+          settingsButton: "설정",
+          minimize: "최소화",
+          restore: "복원",
+          hide: "숨기기",
+          show: "표시",
+        },
+        ja: {
+          title: "使用量",
+          usagePrimary: "現在のセッション (5h)",
+          usageMonthly: "月間上限",
+          usageWeeklyAll: "週間 · 全モデル",
+          usageFable: "週間 · Fable",
+          usedPct: "{n}% 使用済み",
+          resetsIn: "{rel} 後にリセット",
+          usageNone: "使用量を取得できません",
+          empty: "アカウントがありません。",
+          settings: "非表示のアカウント",
+          activeBadge: "使用中",
+          alwaysOnTop: "常に最前面に表示",
+          alwaysOnTopTaskbarNotice: "常に最前面に表示をオフにするとタスクバーに隠れるため、最小化位置を右下に自動変更します。",
+          minimizedPosition: "最小化時の位置",
+          taskbar: "タスクバー（時計の横）",
+          bottomRight: "右下",
+          bottomLeft: "左下",
+          settingsEmpty: "非表示のアカウントはありません。",
+          settingsButton: "設定",
+          minimize: "最小化",
+          restore: "元に戻す",
+          hide: "非表示",
+          show: "表示",
+        },
+        zh: {
+          title: "用量",
+          usagePrimary: "当前会话 (5h)",
+          usageMonthly: "每月限额",
+          usageWeeklyAll: "每周 · 所有模型",
+          usageFable: "每周 · Fable",
+          usedPct: "{n}% 已用",
+          resetsIn: "{rel} 后重置",
+          usageNone: "无法获取用量",
+          empty: "还没有账号。",
+          settings: "隐藏的账号",
+          activeBadge: "使用中",
+          alwaysOnTop: "始终置顶",
+          alwaysOnTopTaskbarNotice: "关闭始终置顶后，任务栏会遮住小组件，因此已将最小化位置自动改为右下角。",
+          minimizedPosition: "最小化位置",
+          taskbar: "任务栏（时钟旁）",
+          bottomRight: "右下角",
+          bottomLeft: "左下角",
+          settingsEmpty: "没有隐藏的账号。",
+          settingsButton: "设置",
+          minimize: "最小化",
+          restore: "还原",
+          hide: "隐藏",
+          show: "显示",
+        },
+      };
+      let M = DICTS.en;
+      const fmt = (s, vars) =>
+        Object.entries(vars).reduce((a, [k, v]) => a.replace("{" + k + "}", v), s);
+
+      const esc = (s) => (s || "").replace(/[&<>"]/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+      function fmtReset(resetsAt) {
+        if (!resetsAt) return "";
+        const mins = Math.max(0, Math.round((resetsAt - Date.now()) / 60000));
+        const h = Math.floor(mins / 60), m = mins % 60;
+        const rel =
+          h >= 48 ? `${Math.floor(h / 24)}d ${h % 24}h` : h > 0 ? `${h}h ${m}m` : `${m}m`;
+        return fmt(M.resetsIn, { rel });
+      }
+
+      const usedPct = (w) => Math.max(0, Math.min(100, Math.round(w.usedPercent || 0)));
+      const gaugeTone = (n) => (n >= 90 ? "red" : n >= 70 ? "amber" : "green");
+
+      function usageRow(label, w) {
+        const used = usedPct(w);
+        return `<div class="usage-row" data-tone="${gaugeTone(used)}">
+          <div class="usage-row-head">
+            <span class="usage-label">${label}</span>
+            <span class="usage-pct">${fmt(M.usedPct, { n: used })}</span>
+          </div>
+          <div class="gauge"><span class="gauge-fill" style="width:${used}%"></span></div>
+        </div>`;
+      }
+
+      function primaryLabel(w) {
+        const mins = w && w.windowMinutes;
+        if (mins && mins >= 60 * 24 * 28) return M.usageMonthly;
+        return M.usagePrimary;
+      }
+
+      function usageRows(prov, usage) {
+        if (!usage) return "";
+        const rows = [
+          [primaryLabel(usage.primary), usage.primary],
+          [M.usageWeeklyAll, usage.secondary],
+        ];
+        if (prov === "claude" && Object.prototype.hasOwnProperty.call(usage, "fable")) {
+          rows.push([M.usageFable, usage.fable]);
+        }
+        const present = rows.filter((row) => row[1]);
+        if (present.length === 0) return "";
+        return `<div class="usage-stack">${present.map((row) => usageRow(row[0], row[1])).join("")}</div>`;
+      }
+
+      function renderCard(prov, a) {
+        const rows = usageRows(prov, a.usage) || `<div class="usage-none">${M.usageNone}</div>`;
+        const name = a.name;
+        const active = a.active ? `<span class="active-badge">${M.activeBadge}</span>` : "";
+        return `<div class="acct ${a.active ? "active" : ""}">
+          <div class="name-row">
+            <span class="cdot ${esc(prov)}"></span>
+            <span class="acct-name">${esc(name)}</span>
+            ${active}
+            <button class="account-action hide-account" data-action="hide" data-key="${esc(`${prov}:${a.name}`)}">${M.hide}</button>
+          </div>
+          ${rows}
+        </div>`;
+      }
+
+      function compactUsageGroup(w) {
+        const used = w && w.usedPercent != null ? usedPct(w) : null;
+        const tone = gaugeTone(used ?? 0);
+        const pct = used === null ? "—" : `${used}%`;
+        // Keep a sliver of fill visible at low usage so the bar reads as a gauge.
+        const fill = used === null || used === 0 ? 0 : Math.max(used, 8);
+        return `<div class="compact-usage" data-tone="${tone}">
+          <div class="gauge compact-gauge"><span class="gauge-fill" style="width:${fill}%"></span></div>
+          <span class="compact-pct">${pct}</span>
+        </div>`;
+      }
+
+      function renderCompactLine(prov, a) {
+        const primary = a.usage && a.usage.primary;
+        const secondary = a.usage && a.usage.secondary;
+        const name = a.name;
+        return `<div class="compact-line">
+          <span class="cdot ${esc(prov)}"></span>
+          <span class="compact-name">${esc(name)}</span>
+          ${compactUsageGroup(primary)}
+          ${compactUsageGroup(secondary)}
+        </div>`;
+      }
+
+      let provList = [];
+      let hiddenAccounts = [];
+      let alwaysOnTop = true;
+      let compactPosition = "taskbar";
+      let minimized = false;
+      let taskbarFallbackNotice = false;
+      let accountIndex = new Map();
+      let settingsOpen = false;
+
+      function renderSettings() {
+        const entries = hiddenAccounts.map((key) => {
+          const account = accountIndex.get(key);
+          const label = account ? account.name : key;
+          return `<div class="hidden-account">
+            <span class="hidden-account-name">${esc(label)}</span>
+            <button class="account-action" data-action="show" data-key="${esc(key)}">${M.show}</button>
+          </div>`;
+        }).join("");
+        $("settingsPanel").innerHTML = `<label class="settings-opt"><input type="checkbox" id="alwaysOnTop" ${alwaysOnTop ? "checked" : ""}><span>${M.alwaysOnTop}</span></label>${taskbarFallbackNotice ? `<div class="settings-notice" role="status">${M.alwaysOnTopTaskbarNotice}</div>` : ""}<label class="settings-row"><span>${M.minimizedPosition}</span><select class="settings-select" id="compactPosition"><option value="taskbar" ${compactPosition === "taskbar" ? "selected" : ""}>${M.taskbar}</option><option value="bottom-right" ${compactPosition === "bottom-right" ? "selected" : ""}>${M.bottomRight}</option><option value="bottom-left" ${compactPosition === "bottom-left" ? "selected" : ""}>${M.bottomLeft}</option></select></label><div class="settings-heading">${M.settings}</div>${entries || `<div class="settings-empty">${M.settingsEmpty}</div>`}`;
+        $("settingsPanel").hidden = !settingsOpen;
+        $("list").hidden = settingsOpen;
+        $("tbSettings").classList.toggle("active", settingsOpen);
+      }
+
+      function updateHiddenAccounts(next) {
+        hiddenAccounts = Array.from(new Set(next));
+        return window.rotator.setConfig({ usageWidget: { hiddenAccounts } }).then(() => refresh());
+      }
+
+      function handleAccountAction(event) {
+        const button = event.target instanceof Element ? event.target.closest("[data-action]") : null;
+        const key = button?.getAttribute("data-key");
+        if (!key) return;
+        const next = button.getAttribute("data-action") === "hide"
+          ? [...hiddenAccounts, key]
+          : hiddenAccounts.filter((entry) => entry !== key);
+        void updateHiddenAccounts(next).catch((error) => console.error("Failed to update hidden accounts", error));
+      }
+
+      $("list").addEventListener("click", handleAccountAction);
+      $("settingsPanel").addEventListener("click", handleAccountAction);
+      $("settingsPanel").addEventListener("change", (event) => {
+        if (event.target instanceof HTMLInputElement && event.target.id === "alwaysOnTop") {
+          const wasTaskbarPosition = compactPosition === "taskbar";
+          alwaysOnTop = event.target.checked;
+          const usageWidget = { alwaysOnTop };
+          if (!alwaysOnTop && wasTaskbarPosition) {
+            compactPosition = "bottom-right";
+            taskbarFallbackNotice = true;
+            usageWidget.compactPosition = compactPosition;
+          } else {
+            taskbarFallbackNotice = false;
+          }
+          void window.rotator.setConfig({ usageWidget })
+            .then(() => refresh())
+            .catch((error) => console.error("Failed to update always-on-top", error));
+          return;
+        }
+        if (!(event.target instanceof HTMLSelectElement) || event.target.id !== "compactPosition") return;
+        if (!["taskbar", "bottom-right", "bottom-left"].includes(event.target.value)) return;
+        compactPosition = event.target.value;
+        void window.rotator.setConfig({ usageWidget: { compactPosition } })
+          .then(() => refresh())
+          .catch((error) => console.error("Failed to update minimized position", error));
+      });
+
+      async function refresh() {
+        try {
+          const lang = await window.rotator.getLang().catch(() => "en");
+          M = DICTS[lang] || DICTS.en;
+          $("tbTitle").textContent = M.title;
+          $("tbSettings").setAttribute("aria-label", M.settingsButton);
+          $("tbSettings").setAttribute("title", M.settingsButton);
+          $("tbMinimize").textContent = minimized ? "▢" : "–";
+          $("tbMinimize").setAttribute("aria-label", minimized ? M.restore : M.minimize);
+          $("tbMinimize").setAttribute("title", minimized ? M.restore : M.minimize);
+          document.title = M.title;
+          const config = await window.rotator.getConfig();
+          hiddenAccounts = Array.isArray(config?.usageWidget?.hiddenAccounts)
+            ? config.usageWidget.hiddenAccounts
+            : [];
+          alwaysOnTop = config?.usageWidget?.alwaysOnTop !== false;
+          compactPosition = ["taskbar", "bottom-right", "bottom-left"].includes(config?.usageWidget?.compactPosition)
+            ? config.usageWidget.compactPosition
+            : "taskbar";
+          minimized = config?.usageWidget?.minimized === true;
+          document.body.classList.toggle("compact", minimized);
+          $("tbMinimize").textContent = minimized ? "▢" : "–";
+          $("tbMinimize").setAttribute("aria-label", minimized ? M.restore : M.minimize);
+          $("tbMinimize").setAttribute("title", minimized ? M.restore : M.minimize);
+          if (minimized) {
+            settingsOpen = false;
+          }
+          if (provList.length === 0) provList = await window.rotator.providers();
+
+          const sections = [];
+          const compactLines = [];
+          const nextAccountIndex = new Map();
+          for (const p of provList) {
+            const accounts = await window.rotator.list(p.id).catch(() => []);
+            // Active account first within each provider's group.
+            const ordered = [...accounts].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
+            const visible = [];
+            for (const a of ordered) {
+              const key = `${p.id}:${a.name}`;
+              nextAccountIndex.set(key, a);
+              if (a.active && !hiddenAccounts.includes(key)) compactLines.push(renderCompactLine(p.id, a));
+              if (!hiddenAccounts.includes(key)) visible.push(a);
+            }
+            if (visible.length > 0) {
+              sections.push(`<section class="provider-section"><div class="provider-section-header"><span class="cdot ${esc(p.id)}"></span><span>${esc(p.displayName)}</span></div><div class="provider-section-cards">${visible.map((a) => renderCard(p.id, a)).join("")}</div></section>`);
+            }
+          }
+          accountIndex = nextAccountIndex;
+          const list = $("list");
+          if (minimized) {
+            list.className = "list compact";
+            list.hidden = false;
+            list.innerHTML = compactLines.join("");
+            $("settingsPanel").hidden = true;
+            $("tbSettings").hidden = true;
+            $("tbSettings").classList.remove("active");
+            window.rotator.widgetCompactHeight(list.scrollHeight);
+          } else {
+            list.className = "list";
+            list.innerHTML = sections.length ? sections.join("") : `<div class="empty">${M.empty}</div>`;
+            $("tbSettings").hidden = false;
+            renderSettings();
+          }
+        } catch {
+          // Best-effort widget; leave the previous render on transient failures.
+        }
+      }
+
+      $("tbSettings").addEventListener("click", () => {
+        settingsOpen = !settingsOpen;
+        renderSettings();
+      });
+      $("tbMinimize").addEventListener("click", () => {
+        const next = !minimized;
+        void window.rotator.setConfig({ usageWidget: { minimized: next } })
+          .then(() => refresh())
+          .catch((error) => console.error("Failed to update minimized state", error));
+      });
+      $("tbClose").addEventListener("click", () => window.rotator.closeWidget());
+      window.rotator.onChanged(() => refresh());
+      refresh();
+      setInterval(refresh, 15000);
+    </script>
+  </body>
+</html>

@@ -1,6 +1,6 @@
 {
   "name": "lazyswitch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Auto-rotate Codex CLI/Desktop accounts when usage limits are hit",
   "main": "dist/main/index.js",
   "bin": {
@@ -24,14 +24,29 @@
   "build": {
     "appId": "com.local.lazyswitch",
     "productName": "LazySwitch",
-    "directories": { "output": "release" },
-    "files": ["dist/**/*", "src/renderer/**/*", "assets/**/*"],
-    "win": { "target": "nsis" },
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "src/renderer/**/*",
+      "assets/**/*"
+    ],
+    "asarUnpack": [
+      "dist/main/**"
+    ],
+    "win": {
+      "target": "nsis"
+    },
     "nsis": {
       "oneClick": true,
       "perMachine": false,
-      "runAfterFinish": true
+      "runAfterFinish": true,
+      "include": "build/installer.nsh"
     },
-    "mac": { "target": "dmg", "category": "public.app-category.developer-tools" }
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.developer-tools"
+    }
   }
 }

@@ -5,6 +5,20 @@ import { ProviderPrefs } from "./providers/types";
 
 export { ProviderPrefs };
 
+export interface UsageWidgetConfig {
+  /** The persistent usage widget is shown. */
+  enabled: boolean;
+  /** Last user-chosen position/size; null coordinates fall back to a default corner. */
+  x: number | null;
+  y: number | null;
+  width: number;
+  height: number;
+  alwaysOnTop: boolean;
+  compactPosition: "taskbar" | "bottom-right" | "bottom-left";
+  minimized: boolean;
+  hiddenAccounts: readonly string[];
+}
+
 export interface AppConfig {
   /** UI language: "" = follow system; "ko" | "en" | "ja" | "zh". */
   language: string;
@@ -14,11 +28,24 @@ export interface AppConfig {
   onboarded: boolean;
   codex: ProviderPrefs;
   claude: ProviderPrefs;
+  usageWidget: UsageWidgetConfig;
 }
+
+const USAGE_WIDGET_DEFAULTS: UsageWidgetConfig = {
+  enabled: true,
+  x: null,
+  y: null,
+  width: 354,
+  height: 563,
+  alwaysOnTop: true,
+  compactPosition: "taskbar",
+  minimized: false,
+  hiddenAccounts: [],
+};
 
 const CODEX_DEFAULTS: ProviderPrefs = {
   autoApprove: false,
-  autoRestartCli: false,
+  autoRestartCli: true,
   desktopAppPath: "",
   desktopProcessName: process.platform === "win32" ? "Codex.exe" : "Codex",
   rotationOrder: [],
@@ -29,7 +56,7 @@ const CODEX_DEFAULTS: ProviderPrefs = {
 
 const CLAUDE_DEFAULTS: ProviderPrefs = {
   autoApprove: false, // no desktop restart for Claude — kept for shape parity
-  autoRestartCli: false,
+  autoRestartCli: true,
   desktopAppPath: "",
   desktopProcessName: "",
   rotationOrder: [],
@@ -44,6 +71,7 @@ const DEFAULTS: AppConfig = {
   onboarded: false,
   codex: CODEX_DEFAULTS,
   claude: CLAUDE_DEFAULTS,
+  usageWidget: USAGE_WIDGET_DEFAULTS,
 };
 
 /** Legacy flat keys (pre multi-provider) that map into the codex section. */
@@ -74,6 +102,12 @@ function migrate(raw: any): Partial<AppConfig> {
   }
   out.codex = { ...CODEX_DEFAULTS, ...legacyCodex, ...(raw.codex ?? {}) };
   out.claude = { ...CLAUDE_DEFAULTS, ...(raw.claude ?? {}) };
+  out.usageWidget = { ...USAGE_WIDGET_DEFAULTS, ...(raw.usageWidget ?? {}) };
+  if (out.usageWidget.compactPosition !== "taskbar" &&
+      out.usageWidget.compactPosition !== "bottom-right" &&
+      out.usageWidget.compactPosition !== "bottom-left") {
+    out.usageWidget.compactPosition = "taskbar";
+  }
   return out;
 }
 
@@ -91,6 +125,7 @@ export function loadConfig(): AppConfig {
       ...DEFAULTS,
       codex: { ...CODEX_DEFAULTS },
       claude: { ...CLAUDE_DEFAULTS },
+      usageWidget: { ...USAGE_WIDGET_DEFAULTS },
     };
   }
 }

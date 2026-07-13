@@ -3,8 +3,17 @@ import * as fs from "fs";
 import * as http from "http";
 import * as os from "os";
 import * as path from "path";
-import { shell } from "electron";
 import { Provider, PAccount, PUsage, PWindow, LoginFlowResult } from "./types";
+
+/**
+ * Only the browser login flow needs Electron, and the packaged CLI runs under
+ * plain node with no electron module to resolve — so load it on use, not on
+ * import, or `lazyswitch statusline claude` dies before it reads a token.
+ */
+function openInBrowser(url: string): void {
+  const { shell } = require("electron") as typeof import("electron");
+  void shell.openExternal(url);
+}
 
 /**
  * Claude Code account provider.
@@ -159,7 +168,11 @@ interface CacheEntry {
   usage: PUsage | null;
 }
 const usageCache = new Map<string, CacheEntry>();
-let rateLimitedUntil = 0;
+/**
+ * Per account: the usage endpoint rate-limits each token separately, so a 429
+ * on one account must not blank out the usage of every other Claude account.
+ */
+const rateLimitedUntil = new Map<string, number>();
 
 function isoToMs(v: unknown): number | null {
   if (typeof v !== "string") return null;
@@ -218,7 +231,7 @@ async function fetchUsageFor(name: string | null): Promise<PUsage | null> {
   const cached = usageCache.get(key);
   const now = Date.now();
   if (cached && now - cached.at < USAGE_CACHE_MS) return cached.usage;
-  if (now < rateLimitedUntil) return cached?.usage ?? null;
+  if (now < (rateLimitedUntil.get(key) ?? 0)) return cached?.usage ?? null;
 
   const credFile = name === null ? liveCredFile() : slotCredFile(name);
   let cred = readJson(credFile);
@@ -238,8 +251,10 @@ async function fetchUsageFor(name: string | null): Promise<PUsage | null> {
     });
     if (res.status === 429) {
       const retry = parseInt(res.headers.get("retry-after") ?? "", 10);
-      rateLimitedUntil =
-        now + (Number.isFinite(retry) && retry >= 0 ? retry * 1000 : DEFAULT_429_BACKOFF_MS);
+      rateLimitedUntil.set(
+        key,
+        now + (Number.isFinite(retry) && retry >= 0 ? retry * 1000 : DEFAULT_429_BACKOFF_MS)
+      );
       return cached?.usage ?? null;
     }
     if (!res.ok) return cached?.usage ?? null;
@@ -261,7 +276,7 @@ async function fetchUsageFor(name: string | null): Promise<PUsage | null> {
       email: meta?.oauthAccount?.emailAddress ?? null,
     };
     usageCache.set(key, { at: now, usage });
-    rateLimitedUntil = 0;
+    rateLimitedUntil.delete(key);
     return usage;
   } catch {
     return cached?.usage ?? null;
@@ -369,7 +384,7 @@ async function addViaLogin(onUrl?: (url: string) => void): Promise<LoginFlowResu
   const cbPromise = waitForCallback(state); // claim the port before opening the browser
   cbPromise.catch(() => {}); // errors surface via the await below
   onUrl?.(url);
-  void shell.openExternal(url);
+  openInBrowser(url);
 
   let code: string;
   try {

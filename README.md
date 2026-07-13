@@ -51,6 +51,8 @@ Download the installer from the [latest release](https://github.com/datell1357/L
 
 It installs per-user (no admin prompt) and launches straight into the tray. There is no main window — everything hangs off the tray icon.
 
+When reinstalling over an existing installation, the installer asks whether to delete the old settings and cache first. Enrolled accounts are never touched.
+
 Windows SmartScreen will warn about an unsigned app. *More info → Run anyway*.
 
 ### Or Build It Yourself
@@ -70,9 +72,13 @@ npm run dist     # build an installer into release/
 LazySwitch never asks for credentials. It moves the auth files the CLIs already wrote, so you log in the normal way and then hand the login over.
 
 1. **Log in** to an account the usual way — `codex login`, or start `claude` and log in.
-2. Open the tray menu → **Enroll current login as…** and give it a name (`Pro`, `Free`, `Spare-1`, …).
+2. Open **Manage accounts…** from the tray, add the current/login account there, and give the slot a name (`Pro`, `Free`, `Spare-1`, …).
 3. Log in as the next account, enroll it too. Repeat.
-4. Open **Accounts** from the tray to see every account, its plan, and how much of each window it has burned.
+4. Open **Manage accounts…** from the tray to see every account, its plan, and how much of each window it has burned.
+
+The tray menu does not list accounts or usage. Use **Manage accounts…** to open the account manager and switch accounts by hand. It also contains the tutorial, auto-restart toggles, **Show usage widget**, **Start at login**, language, and quit.
+
+On first launch, the tutorial includes a usage-widget step with checkboxes for showing the widget and keeping it always on top, plus a minimized-position picker. Its final step has **Skip**, which closes the tutorial without opening the account manager.
 
 Two accounts on a provider is the minimum for rotation to have anywhere to go.
 
@@ -93,6 +99,16 @@ Each card shows two independent facts, side by side:
 They are independent: an account can be *in use* and *disabled as a spare* at the same time, and the card says so. The button beside the badges is the action (**Turn off** / **Turn on**), not the state.
 
 Below the badges, every usage window the provider reports — the 5-hour session, the weekly total, per-model weeklies, monthly caps — with the reset time under each bar.
+
+### The Usage Widget
+
+The usage widget is a small window that is always on top by default. It appears after at least one account is enrolled and the first-run tutorial has been dismissed. It shows usage gauges for every enrolled account in separate **Codex** and **Claude** cards, with the active account first in each group. Toggle it from the tray menu with **Show usage widget**.
+
+Drag the title bar to move it and any edge to resize it; its position and size are remembered. The gear button opens settings with an **Always on top** toggle, a **Minimized position** picker, and a list of hidden accounts that can be restored. Each account has a **Hide** button.
+
+The minimize button collapses the widget into a compact strip with one line per active account, showing only the 5-hour and weekly gauges. The strip is locked in place and cannot be moved or resized; its position is controlled by **Minimized position**: on the taskbar next to the clock (default), bottom-right, or bottom-left. Right-click the strip for **Settings / Maximize / Close**.
+
+If **Always on top** is turned off while the minimized position is **On the taskbar**, the position automatically changes to bottom-right and an on-screen notice explains why.
 
 ---
 
@@ -122,7 +138,7 @@ Usage comes from each provider's own telemetry: Codex's `rate_limits` from the n
 
 ## CLI Session Handover
 
-A switch invalidates the token every running `codex` / `claude` CLI is holding. With **Auto-restart CLI** on, LazySwitch finds those sessions and hands each one over:
+A switch invalidates the token every running `codex` / `claude` CLI is holding. **Auto-restart CLI** is on by default for both Codex and Claude; when enabled, LazySwitch finds those sessions and hands each one over:
 
 1. Kills the CLI process.
 2. Closes the shell it ran in, when that shell can be closed.
@@ -164,12 +180,12 @@ Sessions living in an **Orca** tab reopen as a new Orca tab, and never spill a d
 
 ## Settings
 
-Tray → **Settings**, or edit `%APPDATA%/LazySwitch/config.json` directly. Most keys are per provider.
+Open **Manage accounts…** from the tray and use **Options**, or edit `%APPDATA%/LazySwitch/config.json` directly. Most keys are per provider.
 
 | key | default | meaning |
 |---|---|---|
 | `autoApprove` | `false` | rotate without the approval popup |
-| `autoRestartCli` | `false` | hand running CLI sessions over on a switch |
+| `autoRestartCli` | `true` | hand running CLI sessions over on a switch (Codex and Claude) |
 | `desktopAppPath` | `""` | Codex Desktop exe or `shell:AppsFolder\…` AUMID (auto-detected if empty) |
 | `primaryMinLeftPct` | `5` | switch when the 5-hour window has ≤ this % left |
 | `weeklyMinLeftPct` | `1` | switch when the weekly window has ≤ this % left |
@@ -186,13 +202,20 @@ The tray app is the whole product, but the same numbers are available from a ter
 ```bash
 lazyswitch status                    # print the account usage table once
 lazyswitch watch --interval 30       # keep the table on screen
-lazyswitch statusline                # one compact line
+lazyswitch statusline                # one compact line per account
 lazyswitch statusline claude         # …for a single provider
 lazyswitch install-hooks             # Claude statusLine + Codex built-ins
-lazyswitch install-codex-wrapper     # wrap codex with a LazySwitch usage pane
 ```
 
 `install-hooks` puts the usage line into Claude Code's status bar, so you can see the window burning down without leaving the CLI.
+
+`statusline` prints one line per account, using the name you gave the slot (not its e-mail), its state, and fixed-width `5H` / `Week` / `Fable` gauges. The active account of each provider is listed first; Codex lines omit `Fable`. It adapts to the terminal width and drops reset-time text when the terminal is narrow.
+
+```text
+Claude Pro ACT 5H [  31% 2h47m ] Week [  90% 2h47m ] Fable [  99% 2h47m ]
+티그       RST 5H [ 100% 1h17m ] Week [  39% 1h17m ] Fable [  12% 1h17m ]
+Codex Pro  ACT 5H [   4% 6d0h  ] Week [   0% 6d0h  ]
+```
 
 From a source checkout, before installing:
 

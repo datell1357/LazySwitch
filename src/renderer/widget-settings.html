@@ -1,0 +1,183 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <style>
+      :root {
+        --bg: #16171b; --card: #1e2026; --line: #2c2f38;
+        --text: #e8e9ec; --muted: #9aa0ac;
+        --accent: #10a37f; --accent-hi: #14c493;
+        --gauge-amber: #e8b13f;
+      }
+      * { box-sizing: border-box; }
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: #2c2f38; border-radius: 6px; }
+      html, body {
+        margin: 0; width: 100%; height: 100%;
+        background: var(--bg); color: var(--text);
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        overflow: hidden;
+      }
+      .titlebar {
+        height: 30px; display: flex; align-items: center; justify-content: space-between;
+        padding: 0 6px 0 10px; background: #101216; border-bottom: 1px solid var(--line);
+        -webkit-app-region: drag; user-select: none;
+      }
+      .tb-title { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700; color: var(--muted); }
+      .tb-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent-hi); }
+      .tb-close {
+        -webkit-app-region: no-drag; width: 24px; height: 20px; padding: 0;
+        border: none; background: transparent; color: var(--muted);
+        font-size: 12px; border-radius: 5px; cursor: pointer; line-height: 1;
+      }
+      .tb-close:hover { background: #e5533a; color: #fff; }
+      .settings-panel {
+        height: calc(100% - 30px); overflow-y: auto; padding: 10px 8px;
+        display: grid; gap: 8px; align-content: start;
+      }
+      .settings-opt {
+        display: flex; align-items: center; gap: 8px; padding: 8px 9px;
+        background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+        font-size: 11px; cursor: pointer;
+      }
+      .settings-opt input { margin: 0; accent-color: var(--accent); }
+      .settings-notice { color: var(--gauge-amber); font-size: 10px; line-height: 1.35; padding: 0 9px; }
+      .settings-row {
+        display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px;
+        background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+        font-size: 11px;
+      }
+      .settings-select {
+        min-width: 132px; padding: 4px 6px; background: #16171b; border: 1px solid var(--line);
+        color: var(--text); border-radius: 5px; font: inherit; font-size: 11px;
+      }
+      .settings-heading { font-size: 10px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+      .hidden-account {
+        display: flex; align-items: center; gap: 8px; min-width: 0;
+        padding: 8px 9px; background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+      }
+      .hidden-account-name { min-width: 0; flex: 1; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .account-action {
+        flex-shrink: 0; border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px;
+        background: #252934; color: var(--muted); font: inherit; font-size: 9px; cursor: pointer;
+      }
+      .account-action:hover { border-color: var(--accent); color: var(--text); }
+      .settings-empty { color: var(--muted); font-size: 11px; text-align: center; padding: 20px 0; }
+    </style>
+  </head>
+  <body>
+    <div class="titlebar">
+      <div class="tb-title"><span class="tb-dot"></span><span id="tbTitle">Settings</span></div>
+      <button class="tb-close" id="tbClose" aria-label="Close">&#x2715;</button>
+    </div>
+    <main class="settings-panel" id="settingsPanel"></main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const DICTS = {
+        en: {
+          title: "Settings", hiddenAccounts: "Hidden accounts", alwaysOnTop: "Always on top",
+          alwaysOnTopTaskbarNotice: "With always-on-top off, the taskbar would cover the widget, so the minimized position has been changed to bottom right.",
+          minimizedPosition: "Minimized position", taskbar: "On the taskbar (next to clock)",
+          bottomRight: "Bottom right", bottomLeft: "Bottom left", settingsEmpty: "No hidden accounts.", show: "Show",
+        },
+        ko: {
+          title: "설정", hiddenAccounts: "숨긴 계정", alwaysOnTop: "항상 위에 표시",
+          alwaysOnTopTaskbarNotice: "항상 위에 표시를 끄면 작업표시줄에 가려지므로, 최소화 위치를 우측 하단으로 자동 변경합니다.",
+          minimizedPosition: "최소화 위치", taskbar: "작업표시줄 (시계 옆)",
+          bottomRight: "우측 하단", bottomLeft: "좌측 하단", settingsEmpty: "숨긴 계정이 없습니다.", show: "표시",
+        },
+        ja: {
+          title: "設定", hiddenAccounts: "非表示のアカウント", alwaysOnTop: "常に最前面に表示",
+          alwaysOnTopTaskbarNotice: "常に最前面に表示をオフにするとタスクバーに隠れるため、最小化位置を右下に自動変更します。",
+          minimizedPosition: "最小化時の位置", taskbar: "タスクバー（時計の横）",
+          bottomRight: "右下", bottomLeft: "左下", settingsEmpty: "非表示のアカウントはありません。", show: "表示",
+        },
+        zh: {
+          title: "设置", hiddenAccounts: "隐藏的账号", alwaysOnTop: "始终置顶",
+          alwaysOnTopTaskbarNotice: "关闭始终置顶后，任务栏会遮住小组件，因此已将最小化位置自动改为右下角。",
+          minimizedPosition: "最小化位置", taskbar: "任务栏（时钟旁）",
+          bottomRight: "右下角", bottomLeft: "左下角", settingsEmpty: "没有隐藏的账号。", show: "显示",
+        },
+      };
+      let M = DICTS.en;
+      let hiddenAccounts = [];
+      let alwaysOnTop = true;
+      let compactPosition = "taskbar";
+      let taskbarFallbackNotice = false;
+      let accountIndex = new Map();
+
+      const esc = (s) => String(s || "").replace(/[&<>\"]/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+      async function render() {
+        try {
+          const lang = await window.rotator.getLang().catch(() => "en");
+          M = DICTS[lang] || DICTS.en;
+          document.title = M.title;
+          $("tbTitle").textContent = M.title;
+          const config = await window.rotator.getConfig();
+          hiddenAccounts = Array.isArray(config?.usageWidget?.hiddenAccounts) ? config.usageWidget.hiddenAccounts : [];
+          alwaysOnTop = config?.usageWidget?.alwaysOnTop !== false;
+          compactPosition = ["taskbar", "bottom-right", "bottom-left"].includes(config?.usageWidget?.compactPosition)
+            ? config.usageWidget.compactPosition : "taskbar";
+
+          const nextAccountIndex = new Map();
+          const providers = await window.rotator.providers().catch(() => []);
+          for (const provider of providers) {
+            const accounts = await window.rotator.list(provider.id).catch(() => []);
+            for (const account of accounts) nextAccountIndex.set(`${provider.id}:${account.name}`, account);
+          }
+          accountIndex = nextAccountIndex;
+          const entries = hiddenAccounts.map((key) => {
+            const account = accountIndex.get(key);
+            const label = account && account.name ? account.name : key;
+            return `<div class="hidden-account"><span class="hidden-account-name">${esc(label)}</span><button class="account-action" data-action="show" data-key="${esc(key)}">${M.show}</button></div>`;
+          }).join("");
+          $("settingsPanel").innerHTML = `<label class="settings-opt"><input type="checkbox" id="alwaysOnTop" ${alwaysOnTop ? "checked" : ""}><span>${M.alwaysOnTop}</span></label>${taskbarFallbackNotice ? `<div class="settings-notice" role="status">${M.alwaysOnTopTaskbarNotice}</div>` : ""}<label class="settings-row"><span>${M.minimizedPosition}</span><select class="settings-select" id="compactPosition"><option value="taskbar" ${compactPosition === "taskbar" ? "selected" : ""}>${M.taskbar}</option><option value="bottom-right" ${compactPosition === "bottom-right" ? "selected" : ""}>${M.bottomRight}</option><option value="bottom-left" ${compactPosition === "bottom-left" ? "selected" : ""}>${M.bottomLeft}</option></select></label><div class="settings-heading">${M.hiddenAccounts}</div>${entries || `<div class="settings-empty">${M.settingsEmpty}</div>`}`;
+        } catch {
+          // Best-effort settings window; retain the previous render on transient failures.
+        }
+      }
+
+      $("settingsPanel").addEventListener("click", (event) => {
+        const button = event.target instanceof Element ? event.target.closest("[data-action]") : null;
+        const key = button?.getAttribute("data-key");
+        if (!key) return;
+        hiddenAccounts = hiddenAccounts.filter((entry) => entry !== key);
+        void window.rotator.setConfig({ usageWidget: { hiddenAccounts } }).then(render)
+          .catch((error) => console.error("Failed to restore account", error));
+      });
+      $("settingsPanel").addEventListener("change", (event) => {
+        if (event.target instanceof HTMLInputElement && event.target.id === "alwaysOnTop") {
+          const wasTaskbarPosition = compactPosition === "taskbar";
+          alwaysOnTop = event.target.checked;
+          const usageWidget = { alwaysOnTop };
+          if (!alwaysOnTop && wasTaskbarPosition) {
+            compactPosition = "bottom-right";
+            taskbarFallbackNotice = true;
+            usageWidget.compactPosition = compactPosition;
+          } else {
+            taskbarFallbackNotice = false;
+          }
+          void window.rotator.setConfig({ usageWidget }).then(render)
+            .catch((error) => console.error("Failed to update always-on-top", error));
+          return;
+        }
+        if (!(event.target instanceof HTMLSelectElement) || event.target.id !== "compactPosition") return;
+        if (!["taskbar", "bottom-right", "bottom-left"].includes(event.target.value)) return;
+        compactPosition = event.target.value;
+        void window.rotator.setConfig({ usageWidget: { compactPosition } }).then(render)
+          .catch((error) => console.error("Failed to update minimized position", error));
+      });
+      $("tbClose").addEventListener("click", () => window.rotator.closeWidgetSettings());
+      window.rotator.onChanged(() => render());
+      render();
+    </script>
+  </body>
+</html>

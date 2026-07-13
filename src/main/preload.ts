@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld("rotator", {
   getConfig: () => ipcRenderer.invoke("config:get"),
   getLang: () => ipcRenderer.invoke("lang:get"),
   setConfig: (patch: unknown) => ipcRenderer.invoke("config:set", patch),
+  widgetCompactHeight: (height: number) => ipcRenderer.send("widget:compact-height", height),
 
   // First-run tutorial
   finishOnboarding: (openAccounts: boolean) =>
@@ -42,4 +43,6 @@ contextBridge.exposeInMainWorld("rotator", {
     ipcRenderer.on("login:url", (_e, url: string) => cb(url)),
   openUrl: (url: string) => ipcRenderer.invoke("open:url", url),
   closeManager: () => ipcRenderer.invoke("manager:close"),
+  closeWidget: () => ipcRenderer.invoke("widget:close"),
+  closeWidgetSettings: () => ipcRenderer.invoke("widget-settings:close"),
 });

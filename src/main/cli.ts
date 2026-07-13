@@ -21,7 +21,105 @@ class CliError extends Error {}
 
 const providers: readonly Provider[] = [codexProvider, claudeProvider];
 const STATUSLINE_CACHE_MS = 60 * 1000;
-const STATUSLINE_CACHE_VERSION = 8;
+const STATUSLINE_CACHE_VERSION = 11;
+const STATUSLINE_DEFAULT_WIDTH = 80;
+const STATUSLINE_MIN_WIDTH = 20;
+const STATUSLINE_MAX_WIDTH = 1000;
+const STATUSLINE_WIDTH_KEYS = ["width", "cols", "columns", "terminal_width", "terminalWidth"] as const;
+
+type JsonObject = { readonly [key: string]: unknown };
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function saneWidth(value: unknown): number | null {
+  const numeric = typeof value === "number" || typeof value === "string" ? Number(value) : Number.NaN;
+  if (!Number.isFinite(numeric) || numeric < STATUSLINE_MIN_WIDTH || numeric > STATUSLINE_MAX_WIDTH) return null;
+  return Math.floor(numeric);
+}
+
+function directPayloadWidth(value: JsonObject): number | null {
+  for (const key of STATUSLINE_WIDTH_KEYS) {
+    const width = saneWidth(value[key]);
+    if (width !== null) return width;
+  }
+  return null;
+}
+
+function nestedPayloadWidth(value: unknown): number | null {
+  if (!isJsonObject(value)) return null;
+  const direct = directPayloadWidth(value);
+  if (direct !== null) return direct;
+  for (const key of ["terminal", "workspace", "dimensions"] as const) {
+    const nested = nestedPayloadWidth(value[key]);
+    if (nested !== null) return nested;
+  }
+  return null;
+}
+
+function statuslinePayloadWidth(payload: unknown): number | null {
+  if (!isJsonObject(payload)) return null;
+  const direct = directPayloadWidth(payload);
+  if (direct !== null) return direct;
+  for (const key of ["terminal", "workspace", "dimensions"] as const) {
+    const nested = nestedPayloadWidth(payload[key]);
+    if (nested !== null) return nested;
+  }
+  return null;
+}
+
+function parsedJson(text: string): unknown | undefined {
+  if (text.trim() === "") return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+async function readStatuslinePayload(): Promise<unknown | null> {
+  if (process.stdin.isTTY === true || process.stdin.readable === false) return null;
+  process.stdin.setEncoding("utf8");
+  const buffered = process.stdin.read();
+  if (typeof buffered === "string") {
+    const payload = parsedJson(buffered);
+    if (payload !== undefined) return payload;
+  }
+  return new Promise((resolve) => {
+    let input = typeof buffered === "string" ? buffered : "";
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const finish = (payload: unknown | null): void => {
+      if (settled) return;
+      settled = true;
+      if (timeout !== undefined) clearTimeout(timeout);
+      process.stdin.off("data", onData);
+      process.stdin.off("end", onEnd);
+      process.stdin.pause();
+      resolve(payload);
+    };
+    const onData = (chunk: string): void => {
+      input += chunk;
+      const payload = parsedJson(input);
+      if (payload !== undefined) finish(payload);
+    };
+    const onEnd = (): void => finish(parsedJson(input) ?? null);
+    process.stdin.on("data", onData);
+    process.stdin.once("end", onEnd);
+    process.stdin.resume();
+    timeout = setTimeout(() => finish(parsedJson(input) ?? null), 100);
+  });
+}
+
+async function statuslineWidth(): Promise<number> {
+  const payloadWidth = statuslinePayloadWidth(await readStatuslinePayload());
+  if (payloadWidth !== null) return payloadWidth;
+  const stdoutWidth = process.stdout.isTTY ? saneWidth(process.stdout.columns) : null;
+  if (stdoutWidth !== null) return stdoutWidth;
+  const envWidth = saneWidth(process.env.COLUMNS);
+  return envWidth ?? STATUSLINE_DEFAULT_WIDTH;
+}
 
 function command(args: readonly string[]): Command {
   const first = args[0];
@@ -113,37 +211,39 @@ async function rows(filter: ProviderFilter = "all"): Promise<readonly UsageRow[]
   return all;
 }
 
-function statuslineCacheFile(filter: ProviderFilter): string {
-  return path.join(os.homedir(), ".lazyswitch", `statusline-cache-${filter}.json`);
+function statuslineCacheFile(filter: ProviderFilter, width: number): string {
+  return path.join(os.homedir(), ".lazyswitch", `statusline-cache-${filter}-${width}.json`);
 }
 
 function colorMode(): "ansi" | "plain" {
   return process.env.NO_COLOR === "1" ? "plain" : "ansi";
 }
 
-function cachedStatusline(filter: ProviderFilter): string | null {
+function cachedStatusline(filter: ProviderFilter, width: number): string | null {
   try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(statuslineCacheFile(filter), "utf8"));
+    const parsed: unknown = JSON.parse(fs.readFileSync(statuslineCacheFile(filter, width), "utf8"));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
     const at = "at" in parsed ? parsed.at : null;
     const text = "text" in parsed ? parsed.text : null;
     const version = "version" in parsed ? parsed.version : null;
     const mode = "mode" in parsed ? parsed.mode : null;
+    const cachedWidth = "width" in parsed ? parsed.width : null;
     if (typeof at !== "number" || typeof text !== "string") return null;
     if (version !== STATUSLINE_CACHE_VERSION) return null;
     if (mode !== colorMode()) return null;
+    if (cachedWidth !== width) return null;
     return Date.now() - at <= STATUSLINE_CACHE_MS ? text : null;
   } catch {
     return null;
   }
 }
 
-function writeStatusline(filter: ProviderFilter, text: string): void {
-  const file = statuslineCacheFile(filter);
+function writeStatusline(filter: ProviderFilter, width: number, text: string): void {
+  const file = statuslineCacheFile(filter, width);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(
     file,
-    JSON.stringify({ at: Date.now(), text, mode: colorMode(), version: STATUSLINE_CACHE_VERSION }),
+    JSON.stringify({ at: Date.now(), text, mode: colorMode(), version: STATUSLINE_CACHE_VERSION, width }),
     "utf8"
   );
 }
@@ -153,7 +253,7 @@ function help(): string {
     "Usage:",
     "  lazyswitch status              print account usage table once",
     "  lazyswitch watch [--interval N] keep the table visible",
-    "  lazyswitch statusline [provider] print one compact line",
+    "  lazyswitch statusline [provider] print one compact line per account",
     "  lazyswitch install-hooks       install Claude statusLine and Codex built-ins",
     "  lazyswitch install-codex-wrapper wrap codex with a LazySwitch usage pane",
   ].join("\n");
@@ -175,13 +275,14 @@ async function watch(args: readonly string[]): Promise<void> {
 
 async function printStatusline(args: readonly string[]): Promise<void> {
   const filter = providerFilter(args);
-  const cached = cachedStatusline(filter);
+  const width = await statuslineWidth();
+  const cached = cachedStatusline(filter, width);
   if (cached !== null) {
     console.log(cached);
     return;
   }
-  const text = renderStatusline(await rows(filter));
-  writeStatusline(filter, text);
+  const text = renderStatusline(await rows(filter), width);
+  writeStatusline(filter, width, text);
   console.log(text);
 }
 

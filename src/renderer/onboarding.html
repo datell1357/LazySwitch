@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+      content="default-src 'none'; img-src 'self' file:; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
     />
     <style>
       :root {
@@ -87,6 +87,28 @@
       .done h1 { font-size: 21px; }
       .done .lead { max-width: 420px; margin: 0 auto; }
 
+      .usage-widget-image {
+        display: block; width: auto; max-width: 100%; max-height: 300px;
+        margin: 8px auto 0; border: 1px solid var(--line); border-radius: 10px;
+      }
+      .usage-widget-shots {
+        display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
+        gap: 18px; margin-top: 8px;
+      }
+      .usage-widget-shot { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; }
+      .usage-widget-settings { min-width: 0; }
+      .usage-widget-settings .usage-widget-shot { width: 100%; }
+      .usage-widget-settings .usage-widget-controls { margin-top: 10px; }
+      .usage-widget-settings .opt > span { min-width: 0; }
+      .usage-widget-settings .field { align-items: flex-start; }
+      .usage-widget-settings .field label { flex: 0 0 76px; }
+      .usage-widget-settings .field select { min-width: 0; flex: 1 1 auto; }
+      .usage-widget-shot img {
+        display: block; max-width: 100%; max-height: 280px;
+        border: 1px solid var(--line); border-radius: 10px;
+      }
+      .usage-widget-shot .cap { font-size: 11px; color: var(--muted); }
+
       .foot {
         flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
         gap: 10px; padding: 12px 20px 16px; border-top: 1px solid var(--line); background: #101216;
@@ -147,9 +169,20 @@
           optDesktopD: "Desktop caches the old token in memory, so it needs a restart to see the new account. Leave this off to be asked each time.",
           optLogin: "Start LazySwitch at login",
           optLoginD: "Starts hidden in the tray.",
+          optWidget: "Show the usage widget",
+          optWidgetD: "A dedicated window that keeps every account's usage on screen.",
+          optWidgetTop: "Always on top",
+          optWidgetTopD: "Keeps the widget above other windows.",
+          optWidgetPos: "Minimized position",
+          posTaskbar: "On the taskbar (next to the clock)",
+          posBottomRight: "Bottom right",
+          posBottomLeft: "Bottom left",
           lang: "Language", langSystem: "System default",
-          s4t: "Add an account!",
-          s4l: "You are set up. Enroll your first account, then a second one — rotation needs somewhere to go.",
+          s4t: "Usage at a glance",
+          s4l: "Check usage for every enrolled account in a dedicated UI. Move it, resize it, and use minimized mode to keep it on the taskbar.",
+          s4capFull: "Full view", s4capMin: "Minimized",
+          s5t: "Add an account!",
+          s5l: "You are set up. Enroll your first account, then a second one — rotation needs somewhere to go.",
         },
         ko: {
           skip: "건너뛰기", back: "이전", next: "다음", finish: "계정 추가하기",
@@ -171,9 +204,20 @@
           optDesktopD: "데스크톱은 옛 토큰을 메모리에 캐시하므로 재시작해야 새 계정을 인식합니다. 꺼두면 그때마다 물어봅니다.",
           optLogin: "로그인 시 LazySwitch 자동 시작",
           optLoginD: "트레이에 숨겨진 상태로 시작합니다.",
+          optWidget: "사용량 위젯 표시",
+          optWidgetD: "등록한 계정의 사용량을 항상 확인할 수 있는 전용 창입니다.",
+          optWidgetTop: "항상 위에 표시",
+          optWidgetTopD: "다른 창에 가려지지 않습니다.",
+          optWidgetPos: "최소화 위치",
+          posTaskbar: "작업표시줄 (시계 옆)",
+          posBottomRight: "우측 하단",
+          posBottomLeft: "좌측 하단",
           lang: "언어", langSystem: "시스템 기본값",
-          s4t: "계정을 추가해보세요!",
-          s4l: "준비가 끝났습니다. 첫 계정을 등록하고, 두 번째 계정도 등록하세요. 전환이 갈 곳이 있어야 합니다.",
+          s4t: "사용량 한눈에 보기",
+          s4l: "추가한 계정에 대한 사용량을 전용 UI를 통해 확인하세요. 위치를 이동하거나 크기를 조절할 수 있고, 최소화 모드를 통해 작업표시줄에서 확인이 가능합니다.",
+          s4capFull: "기본 화면", s4capMin: "최소화",
+          s5t: "계정을 추가해보세요!",
+          s5l: "준비가 끝났습니다. 첫 계정을 등록하고, 두 번째 계정도 등록하세요. 전환이 갈 곳이 있어야 합니다.",
         },
         ja: {
           skip: "スキップ", back: "戻る", next: "次へ", finish: "アカウントを追加",
@@ -195,9 +239,20 @@
           optDesktopD: "デスクトップは古いトークンをメモリにキャッシュするため、再起動が必要です。オフにすると毎回確認します。",
           optLogin: "ログイン時に LazySwitch を起動",
           optLoginD: "トレイに隠れた状態で起動します。",
+          optWidget: "使用量ウィジェットを表示",
+          optWidgetD: "登録したすべてのアカウントの使用量を常に表示する専用ウィンドウです。",
+          optWidgetTop: "常に最前面に表示",
+          optWidgetTopD: "他のウィンドウに隠れないようにします。",
+          optWidgetPos: "最小化時の位置",
+          posTaskbar: "タスクバー（時計の横）",
+          posBottomRight: "右下",
+          posBottomLeft: "左下",
           lang: "言語", langSystem: "システム既定",
-          s4t: "アカウントを追加しましょう！",
-          s4l: "準備完了です。最初のアカウントを登録し、2つ目も登録してください。切り替え先が必要です。",
+          s4t: "使用量をひと目で確認",
+          s4l: "専用UIで、登録したすべてのアカウントの使用量を確認できます。位置を移動したり、サイズを変更したり、最小化モードでタスクバーに表示したりできます。",
+          s4capFull: "通常表示", s4capMin: "最小化",
+          s5t: "アカウントを追加しましょう！",
+          s5l: "準備完了です。最初のアカウントを登録し、2つ目も登録してください。切り替え先が必要です。",
         },
         zh: {
           skip: "跳过", back: "上一步", next: "下一步", finish: "添加账号",
@@ -219,16 +274,27 @@
           optDesktopD: "桌面版会在内存中缓存旧令牌，需要重启才能识别新账号。关闭则每次询问。",
           optLogin: "开机时启动 LazySwitch",
           optLoginD: "以隐藏方式启动到托盘。",
+          optWidget: "显示用量小组件",
+          optWidgetD: "专用窗口，让你随时查看所有账号的用量。",
+          optWidgetTop: "始终置顶",
+          optWidgetTopD: "不会被其他窗口遮住。",
+          optWidgetPos: "最小化位置",
+          posTaskbar: "任务栏（时钟旁）",
+          posBottomRight: "右下角",
+          posBottomLeft: "左下角",
           lang: "语言", langSystem: "系统默认",
-          s4t: "来添加一个账号吧！",
-          s4l: "设置完成。先注册第一个账号，再注册第二个 — 轮换需要有去处。",
+          s4t: "一眼查看用量",
+          s4l: "通过专用界面查看已添加账号的用量。你可以移动和调整它的大小，并使用最小化模式将其显示在任务栏上。",
+          s4capFull: "完整视图", s4capMin: "最小化",
+          s5t: "来添加一个账号吧！",
+          s5l: "设置完成。先注册第一个账号，再注册第二个 — 轮换需要有去处。",
         },
       };
 
       let M = STR.en;
       let cfg = null;
       let step = 0;
-      const STEPS = 4;
+      const STEPS = 5;
 
       const $ = (id) => document.getElementById(id);
 
@@ -284,12 +350,43 @@
             M = STR[await window.rotator.getLang()] || STR.en;
             render();
           };
+        } else if (step === 3) {
+          s.innerHTML = `
+            <h1>${M.s4t}</h1>
+            <p class="lead">${M.s4l}</p>
+            <div class="usage-widget-shots">
+              <div class="usage-widget-shot">
+                <img src="assets/usage-widget.png" alt="${M.s4t}" />
+                <span class="cap">${M.s4capFull}</span>
+              </div>
+              <div class="usage-widget-settings">
+                <div class="usage-widget-shot">
+                  <img src="assets/usage-widget-compact.png" alt="${M.s4capMin}" />
+                  <span class="cap">${M.s4capMin}</span>
+                </div>
+                <div class="usage-widget-controls">
+                  ${optionRow("widgetEnabled", cfg.usageWidget.enabled, M.optWidget, M.optWidgetD, null)}
+                  ${optionRow("widgetAlwaysOnTop", cfg.usageWidget.alwaysOnTop, M.optWidgetTop, M.optWidgetTopD, null)}
+                  <div class="field">
+                    <label for="widgetCompactPosition">${M.optWidgetPos}</label>
+                    <select id="widgetCompactPosition">
+                      <option value="taskbar" ${cfg.usageWidget.compactPosition === "taskbar" ? "selected" : ""}>${M.posTaskbar}</option>
+                      <option value="bottom-right" ${cfg.usageWidget.compactPosition === "bottom-right" ? "selected" : ""}>${M.posBottomRight}</option>
+                      <option value="bottom-left" ${cfg.usageWidget.compactPosition === "bottom-left" ? "selected" : ""}>${M.posBottomLeft}</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>`;
+          $("widgetEnabled").onchange = (e) => (cfg.usageWidget.enabled = e.target.checked);
+          $("widgetAlwaysOnTop").onchange = (e) => (cfg.usageWidget.alwaysOnTop = e.target.checked);
+          $("widgetCompactPosition").onchange = (e) => (cfg.usageWidget.compactPosition = e.target.value);
         } else {
           s.innerHTML = `
             <div class="done">
               <div class="mark">✓</div>
-              <h1>${M.s4t}</h1>
-              <p class="lead">${M.s4l}</p>
+              <h1>${M.s5t}</h1>
+              <p class="lead">${M.s5l}</p>
             </div>`;
         }
 
@@ -301,7 +398,11 @@
         $("back").textContent = M.back;
         $("next").textContent = step === STEPS - 1 ? M.finish : M.next;
         $("back").disabled = step === 0;
-        $("skip").style.visibility = step === STEPS - 1 ? "hidden" : "visible";
+        // On the closing step, skip sits between "back" and "add an account".
+        const last = step === STEPS - 1;
+        $("skip").style.order = last ? "2" : "1";
+        $("back").style.order = last ? "1" : "2";
+        $("next").style.order = "3";
       }
 
       async function save() {
@@ -310,6 +411,11 @@
           launchAtLogin: cfg.launchAtLogin,
           codex: { autoRestartCli: cfg.codex.autoRestartCli, autoApprove: cfg.codex.autoApprove },
           claude: { autoRestartCli: cfg.claude.autoRestartCli },
+          usageWidget: {
+            enabled: cfg.usageWidget.enabled,
+            alwaysOnTop: cfg.usageWidget.alwaysOnTop,
+            compactPosition: cfg.usageWidget.compactPosition,
+          },
         });
       }
 

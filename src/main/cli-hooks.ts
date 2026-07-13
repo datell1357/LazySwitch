@@ -41,7 +41,10 @@ function shellPath(file: string): string {
 }
 
 function statuslineCommand(provider: "claude"): string {
-  return `node "${shellPath(path.join(__dirname, "cli.js"))}" statusline ${provider}`;
+  // Claude runs this with plain node, which cannot read inside an asar archive;
+  // point it at the unpacked copy (see asarUnpack in package.json).
+  const cli = path.join(__dirname, "cli.js").replace(/app\.asar([\\/])/, "app.asar.unpacked$1");
+  return `node "${shellPath(cli)}" statusline ${provider}`;
 }
 
 const CODEX_WRAPPER_MARKER = "LazySwitch Codex wrapper";
