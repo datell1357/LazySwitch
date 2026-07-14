@@ -604,12 +604,25 @@ impl Provider for ClaudeProvider {
             let path = name
                 .map(|n| self.paths.slot_credentials_file(n))
                 .unwrap_or_else(|| self.paths.live_credentials_file());
-            let mut cred = self.read_credentials(&path)?;
-            cred.get("claudeAiOauth")
+            let Some(mut cred) = self.read_credentials(&path) else {
+                return cached.and_then(|entry| entry.usage);
+            };
+            if cred
+                .get("claudeAiOauth")
                 .and_then(|v| v.get("accessToken"))
-                .and_then(Value::as_str)?;
+                .and_then(Value::as_str)
+                .is_none()
+            {
+                return cached.and_then(|entry| entry.usage);
+            }
             cred = self.refresh_if_needed(&path, cred).await;
-            let token = cred.get("claudeAiOauth")?.get("accessToken")?.as_str()?;
+            let Some(token) = cred
+                .get("claudeAiOauth")
+                .and_then(|v| v.get("accessToken"))
+                .and_then(Value::as_str)
+            else {
+                return cached.and_then(|entry| entry.usage);
+            };
             let headers = HashMap::from([
                 (String::from("Authorization"), format!("Bearer {token}")),
                 (String::from("Accept"), String::from("application/json")),
@@ -706,6 +719,12 @@ impl Provider for ClaudeProvider {
             .get(name.unwrap_or("@live"))?
             .usage
             .clone()
+    }
+    fn cached_usage_updated_at(&self, name: Option<&str>) -> Option<i64> {
+        let cache = self.usage.cache.lock().ok()?;
+        let entry = cache.get(name.unwrap_or("@live"))?;
+        entry.usage.as_ref()?;
+        Some(entry.at)
     }
 }
 

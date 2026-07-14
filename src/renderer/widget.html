@@ -158,6 +158,20 @@
       .usage-row[data-tone="amber"] .gauge-fill { background: var(--gauge-amber); }
       .usage-row[data-tone="red"] .gauge-fill { background: var(--gauge-red); }
       .usage-none { font-size: 10px; color: #6b7280; margin-top: 6px; }
+
+      .usage-trend { margin-top: 6px; }
+      .usage-sparkline { display: block; width: 100%; height: 18px; }
+      .usage-sparkline polyline {
+        fill: none; stroke: var(--muted); stroke-width: 1.5;
+        stroke-linejoin: round; stroke-linecap: round;
+        vector-effect: non-scaling-stroke;
+      }
+
+      .usage-stack.is-stale .usage-pct { color: #8b8f98; }
+      .usage-stack.is-stale .gauge-fill { background: #565b66; }
+      .usage-stale-note { font-size: 8px; color: #6f7682; margin-top: 4px; }
+      .compact-usage.is-stale .compact-pct { color: #8b8f98; }
+      .compact-usage.is-stale .gauge-fill { background: #565b66; }
       .empty { color: var(--muted); font-size: 11px; text-align: center; padding: 20px 0; }
       .provider-section {
         display: grid; gap: 6px; padding: 0 5px 5px;
@@ -210,6 +224,8 @@
           usedPct: "{n}% used",
           resetsIn: "resets in {rel}",
           usageNone: "Usage unavailable",
+          usageStale: "Updated {rel} ago",
+          usageTrend: "Usage trend (past week)",
           empty: "No accounts yet.",
           settings: "Hidden accounts",
           activeBadge: "Active",
@@ -235,6 +251,8 @@
           usedPct: "{n}% 사용됨",
           resetsIn: "{rel} 후 리셋",
           usageNone: "사용량 조회 불가",
+          usageStale: "{rel} 전 갱신됨",
+          usageTrend: "사용량 추이 (최근 1주)",
           empty: "등록된 계정이 없습니다.",
           settings: "숨긴 계정",
           activeBadge: "사용중",
@@ -260,6 +278,8 @@
           usedPct: "{n}% 使用済み",
           resetsIn: "{rel} 後にリセット",
           usageNone: "使用量を取得できません",
+          usageStale: "{rel} 前に更新",
+          usageTrend: "使用量の推移（過去1週間）",
           empty: "アカウントがありません。",
           settings: "非表示のアカウント",
           activeBadge: "使用中",
@@ -285,6 +305,8 @@
           usedPct: "{n}% 已用",
           resetsIn: "{rel} 后重置",
           usageNone: "无法获取用量",
+          usageStale: "{rel}前更新",
+          usageTrend: "用量趋势（近一周）",
           empty: "还没有账号。",
           settings: "隐藏的账号",
           activeBadge: "使用中",
@@ -321,6 +343,18 @@
       const usedPct = (w) => Math.max(0, Math.min(100, Math.round(w.usedPercent || 0)));
       const gaugeTone = (n) => (n >= 90 ? "red" : n >= 70 ? "amber" : "green");
 
+      // A poll cycle can legitimately fail once (rate limit, transient network
+      // error) without the number being wrong yet; only call it stale once
+      // it's been sitting well past a normal refresh window.
+      const STALE_AFTER_MS = 10 * 60 * 1000;
+      const isStale = (updatedAt) => !!updatedAt && Date.now() - updatedAt > STALE_AFTER_MS;
+      function fmtAge(updatedAt) {
+        const mins = Math.max(0, Math.round((Date.now() - updatedAt) / 60000));
+        const h = Math.floor(mins / 60), m = mins % 60;
+        const rel = h > 0 ? `${h}h ${m}m` : `${m}m`;
+        return fmt(M.usageStale, { rel });
+      }
+
       function usageRow(label, w) {
         const used = usedPct(w);
         return `<div class="usage-row" data-tone="${gaugeTone(used)}">
@@ -338,7 +372,7 @@
         return M.usagePrimary;
       }
 
-      function usageRows(prov, usage) {
+      function usageRows(prov, usage, updatedAt) {
         if (!usage) return "";
         const rows = [
           [primaryLabel(usage.primary), usage.primary],
@@ -349,11 +383,25 @@
         }
         const present = rows.filter((row) => row[1]);
         if (present.length === 0) return "";
-        return `<div class="usage-stack">${present.map((row) => usageRow(row[0], row[1])).join("")}</div>`;
+        const stale = isStale(updatedAt);
+        const staleNote = stale ? `<div class="usage-stale-note">${fmtAge(updatedAt)}</div>` : "";
+        return `<div class="usage-stack${stale ? " is-stale" : ""}">${present.map((row) => usageRow(row[0], row[1])).join("")}</div>${staleNote}`;
       }
 
-      function renderCard(prov, a) {
-        const rows = usageRows(prov, a.usage) || `<div class="usage-none">${M.usageNone}</div>`;
+      function renderSparkline(samples) {
+        if (!samples || samples.length < 2) return "";
+        const w = 100, h = 18, pad = 1;
+        const points = samples.map((s, i) => {
+          const x = (i / (samples.length - 1)) * w;
+          const used = Math.max(0, Math.min(100, s.usedPercent));
+          const y = h - pad - (used / 100) * (h - pad * 2);
+          return `${x.toFixed(1)},${y.toFixed(1)}`;
+        }).join(" ");
+        return `<div class="usage-trend" title="${esc(M.usageTrend)}"><svg class="usage-sparkline" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><polyline points="${points}" /></svg></div>`;
+      }
+
+      function renderCard(prov, a, history) {
+        const rows = usageRows(prov, a.usage, a.usageUpdatedAt) || `<div class="usage-none">${M.usageNone}</div>`;
         const name = a.name;
         const active = a.active ? `<span class="active-badge">${M.activeBadge}</span>` : "";
         return `<div class="acct ${a.active ? "active" : ""}">
@@ -364,16 +412,17 @@
             <button class="account-action hide-account" data-action="hide" data-key="${esc(`${prov}:${a.name}`)}">${M.hide}</button>
           </div>
           ${rows}
+          ${renderSparkline(history)}
         </div>`;
       }
 
-      function compactUsageGroup(w) {
+      function compactUsageGroup(w, stale) {
         const used = w && w.usedPercent != null ? usedPct(w) : null;
         const tone = gaugeTone(used ?? 0);
         const pct = used === null ? "—" : `${used}%`;
         // Keep a sliver of fill visible at low usage so the bar reads as a gauge.
         const fill = used === null || used === 0 ? 0 : Math.max(used, 8);
-        return `<div class="compact-usage" data-tone="${tone}">
+        return `<div class="compact-usage${stale ? " is-stale" : ""}" data-tone="${tone}">
           <div class="gauge compact-gauge"><span class="gauge-fill" style="width:${fill}%"></span></div>
           <span class="compact-pct">${pct}</span>
         </div>`;
@@ -382,12 +431,13 @@
       function renderCompactLine(prov, a) {
         const primary = a.usage && a.usage.primary;
         const secondary = a.usage && a.usage.secondary;
+        const stale = isStale(a.usageUpdatedAt);
         const name = a.name;
         return `<div class="compact-line">
           <span class="cdot ${esc(prov)}"></span>
           <span class="compact-name">${esc(name)}</span>
-          ${compactUsageGroup(primary)}
-          ${compactUsageGroup(secondary)}
+          ${compactUsageGroup(primary, stale)}
+          ${compactUsageGroup(secondary, stale)}
         </div>`;
       }
 
@@ -502,7 +552,13 @@
               if (!hiddenAccounts.includes(key)) visible.push(a);
             }
             if (visible.length > 0) {
-              sections.push(`<section class="provider-section"><div class="provider-section-header"><span class="cdot ${esc(p.id)}"></span><span>${esc(p.displayName)}</span></div><div class="provider-section-cards">${visible.map((a) => renderCard(p.id, a)).join("")}</div></section>`);
+              // Sparkline history is only rendered in normal mode, so skip the
+              // extra IPC round-trip while the widget is minimized/compact.
+              const histories = minimized
+                ? []
+                : await Promise.all(visible.map((a) => window.rotator.usageHistory(p.id, a.name).catch(() => [])));
+              const cards = visible.map((a, i) => renderCard(p.id, a, histories[i])).join("");
+              sections.push(`<section class="provider-section"><div class="provider-section-header"><span class="cdot ${esc(p.id)}"></span><span>${esc(p.displayName)}</span></div><div class="provider-section-cards">${cards}</div></section>`);
             }
           }
           accountIndex = nextAccountIndex;

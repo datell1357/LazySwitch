@@ -19,6 +19,7 @@
 
     providers: () => invoke("providers:list"),
     list: (provider) => invoke("accounts:list", { provider }),
+    usageHistory: (provider, name) => invoke("usage:history", { provider, name }),
     switchTo: (provider, name) => invoke("accounts:switch", { provider, name }),
     setEnabled: (provider, name, enabled) =>
       invoke("accounts:setEnabled", { provider, name, enabled }),

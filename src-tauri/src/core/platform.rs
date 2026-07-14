@@ -34,7 +34,7 @@ mod windows_impl {
         GetWindowRect, GetTopWindow, SetForegroundWindow, SetWindowPos, ShowWindow,
         SetLayeredWindowAttributes, SetWindowLongPtrW, GWL_EXSTYLE, GW_HWNDNEXT,
         HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, LWA_ALPHA, SWP_NOACTIVATE, SWP_NOMOVE,
-        SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE, WS_EX_LAYERED,
+        SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE, WS_EX_LAYERED, WS_EX_TRANSPARENT,
     };
     use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
     use windows::Win32::System::DataExchange::{EmptyClipboard, OpenClipboard, SetClipboardData, CloseClipboard};
@@ -120,6 +120,20 @@ mod windows_impl {
             let next = if enabled { current | WS_EX_LAYERED.0 } else { current & !WS_EX_LAYERED.0 };
             let _ = SetWindowLongPtrW(window, GWL_EXSTYLE, next as isize);
             if enabled { let _ = SetLayeredWindowAttributes(window, windows::Win32::Foundation::COLORREF(0), 255, LWA_ALPHA); }
+        }
+    }
+
+    pub fn is_click_through(hwnd: isize) -> bool {
+        hwnd != 0 && unsafe { (GetWindowLongPtrW(HWND(hwnd as *mut _), GWL_EXSTYLE) as u32 & WS_EX_TRANSPARENT.0) != 0 }
+    }
+
+    pub fn set_click_through(hwnd: isize, enabled: bool) {
+        if hwnd == 0 { return; }
+        let window = HWND(hwnd as *mut _);
+        unsafe {
+            let current = GetWindowLongPtrW(window, GWL_EXSTYLE) as u32;
+            let next = if enabled { current | WS_EX_TRANSPARENT.0 } else { current & !WS_EX_TRANSPARENT.0 };
+            let _ = SetWindowLongPtrW(window, GWL_EXSTYLE, next as isize);
         }
     }
 
@@ -219,6 +233,7 @@ mod windows_impl {
             "taskbarRect": rect_value(taskbar_rect),
             "trayNotifyRect": rect_value(notify_rect),
             "layered": is_layered(widget),
+            "clickThrough": is_click_through(widget),
             "insideTaskbarStrip": strip_inside,
             "rightEdgeLeftOfTrayNotify": left_of_notify,
         })
@@ -343,6 +358,12 @@ pub fn taskbar_theme() -> Option<bool> { None }
 
 #[cfg(not(windows))]
 pub fn acquire_single_instance() -> bool { true }
+
+#[cfg(not(windows))]
+pub fn is_click_through(_hwnd: isize) -> bool { false }
+
+#[cfg(not(windows))]
+pub fn set_click_through(_hwnd: isize, _enabled: bool) {}
 
 #[cfg(not(windows))]
 #[derive(Clone, Copy, Debug)]

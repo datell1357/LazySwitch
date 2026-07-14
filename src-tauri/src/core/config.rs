@@ -18,6 +18,7 @@ pub struct UsageWidgetConfig {
     pub compact_position: String,
     pub minimized: bool,
     pub hidden_accounts: Vec<String>,
+    pub click_through: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -67,6 +68,7 @@ pub fn defaults() -> AppConfig {
             compact_position: "taskbar".into(),
             minimized: false,
             hidden_accounts: Vec::new(),
+            click_through: false,
         },
     }
 }

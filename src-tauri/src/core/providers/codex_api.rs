@@ -53,6 +53,12 @@ impl CodexApiState {
             .usage
             .clone()
     }
+    pub fn cached_usage_updated_at(&self, file: &Path) -> Option<i64> {
+        let cache = self.cache.lock().ok()?;
+        let entry = cache.get(&file.to_string_lossy().to_string())?;
+        entry.usage.as_ref()?;
+        Some(entry.at)
+    }
     pub fn invalidate_usage(&self, file: &Path) {
         if let Ok(mut cache) = self.cache.lock() {
             cache.remove(&file.to_string_lossy().to_string());
@@ -85,8 +91,12 @@ impl CodexApiState {
         {
             return cached.and_then(|entry| entry.usage);
         }
-        let mut auth = read_auth(file)?;
-        auth.tokens.as_ref()?.access_token.as_ref()?;
+        let Some(mut auth) = read_auth(file) else {
+            return cached.and_then(|entry| entry.usage);
+        };
+        if auth.tokens.as_ref().and_then(|t| t.access_token.as_ref()).is_none() {
+            return cached.and_then(|entry| entry.usage);
+        }
         if needs_refresh(&auth, now) {
             auth = refresh_token(transport, file, auth.clone())
                 .await

@@ -232,6 +232,12 @@ impl Provider for CodexProvider {
             .unwrap_or_else(|| self.paths.live_auth_file());
         self.api.cached_usage(&file).map(to_usage)
     }
+    fn cached_usage_updated_at(&self, name: Option<&str>) -> Option<i64> {
+        let file = name
+            .map(|n| self.paths.account_auth_file(n))
+            .unwrap_or_else(|| self.paths.live_auth_file());
+        self.api.cached_usage_updated_at(&file)
+    }
     fn desktop_restart<'a>(
         &'a self,
         _prefs: &'a ProviderPrefs,

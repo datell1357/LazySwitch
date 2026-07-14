@@ -29,6 +29,8 @@ const BG_YELLOW: &str = "\x1b[43m";
 const BG_RED: &str = "\x1b[41m";
 const BG_GRAY: &str = "\x1b[100m";
 
+const STALE_AFTER_MS: i64 = 10 * 60 * 1000;
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UsageRow {
@@ -36,7 +38,15 @@ struct UsageRow {
     account: PAccount,
     active: bool,
     usage: Option<PUsage>,
+    usage_updated_at: Option<i64>,
     error: Option<String>,
+}
+
+fn is_stale_row(row: &UsageRow) -> bool {
+    row.usage.is_some()
+        && row
+            .usage_updated_at
+            .is_some_and(|at| now_ms() - at > STALE_AFTER_MS)
 }
 
 struct ProviderEntry {
@@ -105,25 +115,26 @@ async fn rows(filter: &str) -> Vec<UsageRow> {
 
 async fn row_for(entry: &ProviderEntry, account: PAccount, active_name: Option<&str>) -> UsageRow {
     let active = active_name == Some(account.name.as_str());
-    let usage = entry
-        .provider
-        .fetch_usage(if active {
-            None
-        } else {
-            Some(account.name.as_str())
-        })
-        .await;
+    let name = if active {
+        None
+    } else {
+        Some(account.name.as_str())
+    };
+    let usage = entry.provider.fetch_usage(name).await;
+    let usage_updated_at = entry.provider.cached_usage_updated_at(name);
     UsageRow {
         provider: entry.display.to_owned(),
         account,
         active,
         usage,
+        usage_updated_at,
         error: None,
     }
 }
 
 async fn live_row_for(entry: &ProviderEntry) -> UsageRow {
     let usage = entry.provider.fetch_usage(None).await;
+    let usage_updated_at = entry.provider.cached_usage_updated_at(None);
     let email = usage.as_ref().and_then(|value| value.email.clone());
     UsageRow {
         provider: entry.display.to_owned(),
@@ -136,6 +147,7 @@ async fn live_row_for(entry: &ProviderEntry) -> UsageRow {
         },
         active: true,
         usage,
+        usage_updated_at,
         error: None,
     }
 }
@@ -391,6 +403,8 @@ fn is_resting(usage: Option<&PUsage>) -> bool {
 fn account_state(row: &UsageRow) -> &'static str {
     if row.error.is_some() || row.usage.is_none() {
         "UNKNOWN"
+    } else if is_stale_row(row) {
+        "STALE"
     } else if is_resting(row.usage.as_ref()) {
         "RESTING"
     } else if row.active {
@@ -964,6 +978,7 @@ mod tests {
             account: account(name),
             active,
             usage,
+            usage_updated_at: None,
             error: None,
         }
     }

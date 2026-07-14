@@ -94,11 +94,9 @@
     <div class="card">
       <div class="head">
         <span class="dot" id="dot"></span>
-        <span class="title" id="title">Usage limit reached</span>
+        <span class="title" id="title">Nearing usage limit</span>
       </div>
-      <div class="sub" id="sub">
-        Account switched — restart Codex Desktop to load it?
-      </div>
+      <div class="sub" id="sub"></div>
       <div class="sub" id="cliNote" style="margin: -8px 0 16px; color: #7f8694;"></div>
 
       <div class="bar-wrap" id="barWrap">
@@ -129,10 +127,10 @@
 
       <div class="spacer"></div>
       <div class="actions">
-        <button class="deny" id="deny">Not now</button>
-        <button class="approve" id="approve">Restart Desktop</button>
+        <button class="deny" id="deny">Keep going a bit longer</button>
+        <button class="approve" id="approve">Switch now</button>
       </div>
-      <div class="hint"><kbd>Enter</kbd> restart · <kbd>Esc</kbd> keep running</div>
+      <div class="hint"><kbd>Enter</kbd> switch now · <kbd>Esc</kbd> keep going</div>
     </div>
 
     <script>
@@ -140,39 +138,43 @@
 
       const DICTS = {
         en: {
-          sub: "Account switched — restart Codex Desktop to load it?",
-          cli: "New CLI sessions already use the new account. Restart any CLI session that is still running.",
-          approve: "Restart Desktop",
-          deny: "Not now",
-          hint: "<kbd>Enter</kbd> restart · <kbd>Esc</kbd> keep running",
-          frees: "{from} frees up in ~{rel} (at {when})",
+          title: "Nearing usage limit",
+          sub: "{from} is close to its limit. Switch to {to} now, or keep going a bit longer?",
+          cli: "If you keep going, LazySwitch will still switch automatically once the limit is actually reached.",
+          approve: "Switch now",
+          deny: "Keep going a bit longer",
+          hint: "<kbd>Enter</kbd> switch now · <kbd>Esc</kbd> keep going",
+          frees: "{from} resets in ~{rel} (at {when})",
           left: "{n}% left",
         },
         ko: {
-          sub: "계정 전환 완료 — Codex 데스크탑을 재시작할까요?",
-          cli: "CLI는 새 세션부터 새 계정이 자동 적용됩니다. 이미 실행 중인 CLI 세션은 직접 재시작하세요.",
-          approve: "데스크탑 재시작",
-          deny: "나중에",
-          hint: "<kbd>Enter</kbd> 재시작 · <kbd>Esc</kbd> 유지",
-          frees: "{from} 계정은 ~{rel} 후 사용 가능 ({when})",
+          title: "사용량 한도 임박",
+          sub: "{from} 계정이 한도에 가까워졌습니다. 지금 {to}(으)로 전환할까요, 아니면 조금 더 사용할까요?",
+          cli: "조금 더 사용하도록 두어도, 실제 한도에 도달하면 LazySwitch가 자동으로 전환합니다.",
+          approve: "지금 전환",
+          deny: "조금 더 사용",
+          hint: "<kbd>Enter</kbd> 지금 전환 · <kbd>Esc</kbd> 계속 사용",
+          frees: "{from}은(는) ~{rel} 후 리셋 ({when})",
           left: "{n}% 남음",
         },
         ja: {
-          sub: "アカウントを切り替えました — Codex デスクトップを再起動しますか？",
-          cli: "CLI は新しいセッションから自動的に新アカウントを使います。実行中の CLI セッションは再起動してください。",
-          approve: "デスクトップを再起動",
-          deny: "後で",
-          hint: "<kbd>Enter</kbd> 再起動 · <kbd>Esc</kbd> そのまま",
-          frees: "{from} は約 {rel} 後に利用可能（{when}）",
+          title: "使用量が上限に近づいています",
+          sub: "{from} が上限に近づいています。今すぐ {to} に切り替えますか、それとももう少し続けますか？",
+          cli: "もう少し続けても、実際に上限に達すれば LazySwitch が自動的に切り替えます。",
+          approve: "今すぐ切替",
+          deny: "もう少し続ける",
+          hint: "<kbd>Enter</kbd> 今すぐ切替 · <kbd>Esc</kbd> 続ける",
+          frees: "{from} は約 {rel} 後にリセット（{when}）",
           left: "残り {n}%",
         },
         zh: {
-          sub: "账号已切换 — 要重启 Codex 桌面版吗？",
-          cli: "CLI 的新会话会自动使用新账号。仍在运行的 CLI 会话请手动重启。",
-          approve: "重启桌面版",
-          deny: "暂不",
-          hint: "<kbd>Enter</kbd> 重启 · <kbd>Esc</kbd> 保持",
-          frees: "{from} 约 {rel} 后可用（{when}）",
+          title: "用量接近上限",
+          sub: "{from} 已接近上限。要现在切换到 {to}，还是再用一会儿？",
+          cli: "即使再用一会儿，达到上限后 LazySwitch 仍会自动切换。",
+          approve: "立即切换",
+          deny: "再用一会儿",
+          hint: "<kbd>Enter</kbd> 立即切换 · <kbd>Esc</kbd> 继续使用",
+          frees: "{from} 约 {rel} 后重置（{when}）",
           left: "剩余 {n}%",
         },
       };
@@ -180,7 +182,6 @@
       const fmt = (s, vars) =>
         Object.entries(vars).reduce((a, [k, v]) => a.replace("{" + k + "}", v), s);
 
-      document.getElementById("sub").textContent = L.sub;
       document.getElementById("cliNote").textContent = L.cli;
       document.getElementById("approve").textContent = L.approve;
       document.getElementById("deny").textContent = L.deny;
@@ -195,11 +196,11 @@
 
       const isErr = q.get("kind") === "error";
       document.getElementById("dot").className = "dot" + (isErr ? " err" : "");
-      document.getElementById("title").textContent =
-        q.get("windowLabel") || "Usage limit reached";
+      document.getElementById("title").textContent = q.get("windowLabel") || L.title;
 
       const fromName = q.get("fromName") || "current";
       const toName = q.get("toName") || "next";
+      document.getElementById("sub").textContent = fmt(L.sub, { from: fromName, to: toName });
       document.getElementById("fromName").textContent = fromName;
       document.getElementById("toName").textContent = toName;
       document.getElementById("fromLabel").textContent = q.get("fromLabel") || "";

@@ -30,6 +30,7 @@ urlencoding = "2.1"
 terminal_size = "0.4"
 tokio = { version = "1.48", features = ["io-std", "io-util", "rt", "time"] }
 muda = "0.19.3"
+tauri-plugin-updater = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [

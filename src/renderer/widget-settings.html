@@ -85,24 +85,32 @@
           alwaysOnTopTaskbarNotice: "With always-on-top off, the taskbar would cover the widget, so the minimized position has been changed to bottom right.",
           minimizedPosition: "Minimized position", taskbar: "On the taskbar (next to clock)",
           bottomRight: "Bottom right", bottomLeft: "Bottom left", settingsEmpty: "No hidden accounts.", show: "Show",
+          clickThrough: "Click-through when pinned to the taskbar",
+          clickThroughNotice: "Clicks pass through to the taskbar underneath. Reopen this window from the tray menu (“Widget settings…”) to change it back.",
         },
         ko: {
           title: "설정", hiddenAccounts: "숨긴 계정", alwaysOnTop: "항상 위에 표시",
           alwaysOnTopTaskbarNotice: "항상 위에 표시를 끄면 작업표시줄에 가려지므로, 최소화 위치를 우측 하단으로 자동 변경합니다.",
           minimizedPosition: "최소화 위치", taskbar: "작업표시줄 (시계 옆)",
           bottomRight: "우측 하단", bottomLeft: "좌측 하단", settingsEmpty: "숨긴 계정이 없습니다.", show: "표시",
+          clickThrough: "작업표시줄에 고정 시 클릭 통과 허용",
+          clickThroughNotice: "클릭이 위젯을 통과해 작업표시줄로 전달됩니다. 되돌리려면 트레이 메뉴의 “위젯 설정…”으로 이 창을 다시 여세요.",
         },
         ja: {
           title: "設定", hiddenAccounts: "非表示のアカウント", alwaysOnTop: "常に最前面に表示",
           alwaysOnTopTaskbarNotice: "常に最前面に表示をオフにするとタスクバーに隠れるため、最小化位置を右下に自動変更します。",
           minimizedPosition: "最小化時の位置", taskbar: "タスクバー（時計の横）",
           bottomRight: "右下", bottomLeft: "左下", settingsEmpty: "非表示のアカウントはありません。", show: "表示",
+          clickThrough: "タスクバーに固定時、クリックを透過させる",
+          clickThroughNotice: "クリックはウィジェットを透過してタスクバーに届きます。元に戻すには、トレイメニューの「ウィジェット設定…」からこのウィンドウを開いてください。",
         },
         zh: {
           title: "设置", hiddenAccounts: "隐藏的账号", alwaysOnTop: "始终置顶",
           alwaysOnTopTaskbarNotice: "关闭始终置顶后，任务栏会遮住小组件，因此已将最小化位置自动改为右下角。",
           minimizedPosition: "最小化位置", taskbar: "任务栏（时钟旁）",
           bottomRight: "右下角", bottomLeft: "左下角", settingsEmpty: "没有隐藏的账号。", show: "显示",
+          clickThrough: "固定在任务栏时点击穿透",
+          clickThroughNotice: "点击会穿透小组件传递到任务栏。要改回来，请从托盘菜单的“小组件设置…”重新打开此窗口。",
         },
       };
       let M = DICTS.en;
@@ -110,6 +118,7 @@
       let alwaysOnTop = true;
       let compactPosition = "taskbar";
       let taskbarFallbackNotice = false;
+      let clickThrough = false;
       let accountIndex = new Map();
 
       const esc = (s) => String(s || "").replace(/[&<>\"]/g, (c) =>
@@ -126,6 +135,7 @@
           alwaysOnTop = config?.usageWidget?.alwaysOnTop !== false;
           compactPosition = ["taskbar", "bottom-right", "bottom-left"].includes(config?.usageWidget?.compactPosition)
             ? config.usageWidget.compactPosition : "taskbar";
+          clickThrough = config?.usageWidget?.clickThrough === true;
 
           const nextAccountIndex = new Map();
           const providers = await window.rotator.providers().catch(() => []);
@@ -139,7 +149,10 @@
             const label = account && account.name ? account.name : key;
             return `<div class="hidden-account"><span class="hidden-account-name">${esc(label)}</span><button class="account-action" data-action="show" data-key="${esc(key)}">${M.show}</button></div>`;
           }).join("");
-          $("settingsPanel").innerHTML = `<label class="settings-opt"><input type="checkbox" id="alwaysOnTop" ${alwaysOnTop ? "checked" : ""}><span>${M.alwaysOnTop}</span></label>${taskbarFallbackNotice ? `<div class="settings-notice" role="status">${M.alwaysOnTopTaskbarNotice}</div>` : ""}<label class="settings-row"><span>${M.minimizedPosition}</span><select class="settings-select" id="compactPosition"><option value="taskbar" ${compactPosition === "taskbar" ? "selected" : ""}>${M.taskbar}</option><option value="bottom-right" ${compactPosition === "bottom-right" ? "selected" : ""}>${M.bottomRight}</option><option value="bottom-left" ${compactPosition === "bottom-left" ? "selected" : ""}>${M.bottomLeft}</option></select></label><div class="settings-heading">${M.hiddenAccounts}</div>${entries || `<div class="settings-empty">${M.settingsEmpty}</div>`}`;
+          const clickThroughRow = compactPosition === "taskbar"
+            ? `<label class="settings-opt"><input type="checkbox" id="clickThrough" ${clickThrough ? "checked" : ""}><span>${M.clickThrough}</span></label>${clickThrough ? `<div class="settings-notice" role="status">${M.clickThroughNotice}</div>` : ""}`
+            : "";
+          $("settingsPanel").innerHTML = `<label class="settings-opt"><input type="checkbox" id="alwaysOnTop" ${alwaysOnTop ? "checked" : ""}><span>${M.alwaysOnTop}</span></label>${taskbarFallbackNotice ? `<div class="settings-notice" role="status">${M.alwaysOnTopTaskbarNotice}</div>` : ""}<label class="settings-row"><span>${M.minimizedPosition}</span><select class="settings-select" id="compactPosition"><option value="taskbar" ${compactPosition === "taskbar" ? "selected" : ""}>${M.taskbar}</option><option value="bottom-right" ${compactPosition === "bottom-right" ? "selected" : ""}>${M.bottomRight}</option><option value="bottom-left" ${compactPosition === "bottom-left" ? "selected" : ""}>${M.bottomLeft}</option></select></label>${clickThroughRow}<div class="settings-heading">${M.hiddenAccounts}</div>${entries || `<div class="settings-empty">${M.settingsEmpty}</div>`}`;
         } catch {
           // Best-effort settings window; retain the previous render on transient failures.
         }
@@ -154,6 +167,12 @@
           .catch((error) => console.error("Failed to restore account", error));
       });
       $("settingsPanel").addEventListener("change", (event) => {
+        if (event.target instanceof HTMLInputElement && event.target.id === "clickThrough") {
+          clickThrough = event.target.checked;
+          void window.rotator.setConfig({ usageWidget: { clickThrough } }).then(render)
+            .catch((error) => console.error("Failed to update click-through", error));
+          return;
+        }
         if (event.target instanceof HTMLInputElement && event.target.id === "alwaysOnTop") {
           const wasTaskbarPosition = compactPosition === "taskbar";
           alwaysOnTop = event.target.checked;

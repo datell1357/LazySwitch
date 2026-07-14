@@ -1,0 +1,1 @@
+placeholder — overwritten with the real compiled lazyswitch-cli.exe by tauri.conf.json's beforeBuildCommand before a release bundle is produced. This file only needs to exist so Tauri's resource-path validation (which runs on every `cargo build`, not just `cargo tauri build`) doesn't fail on a fresh checkout.

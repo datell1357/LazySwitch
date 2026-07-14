@@ -5,7 +5,11 @@
   "identifier": "com.local.lazyswitch",
   "mainBinaryName": "lazyswitch",
   "build": {
-    "frontendDist": "../src/renderer"
+    "frontendDist": "../src/renderer",
+    "beforeBuildCommand": {
+      "script": "cargo build --release --bin lazyswitch-cli && copy /Y target\\release\\lazyswitch-cli.exe binaries\\lazyswitch-cli.exe",
+      "cwd": "."
+    }
   },
   "app": {
     "withGlobalTauri": true,
@@ -18,10 +22,25 @@
     "active": true,
     "targets": ["nsis"],
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"],
+    "createUpdaterArtifacts": true,
+    "resources": {
+      "binaries/lazyswitch-cli.exe": "lazyswitch-cli.exe"
+    },
     "windows": {
       "nsis": {
         "installMode": "currentUser",
         "installerHooks": "nsis/installer-hooks.nsh"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFBRTZBNUVFNTA5OEQ0QzAKUldUQTFKaFE3cVhtcWd6d1NQeEJDU2FYRjF1bVRNazd6OGJZSmQ2WDN0OWMrSlMwMkFXdWczYU8K",
+      "endpoints": [
+        "https://github.com/datell1357/LazySwitch/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

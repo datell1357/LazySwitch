@@ -12,6 +12,7 @@ pub mod platform;
 pub mod providers;
 pub mod switcher;
 pub mod types;
+pub mod usage_history;
 
 use std::path::PathBuf;
 

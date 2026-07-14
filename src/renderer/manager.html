@@ -79,7 +79,15 @@
         box-shadow: 0 0 0 1px #c66a3d88 inset, 0 0 28px #c66a3d1c;
         background: linear-gradient(180deg, #251f1b, #1b1d21);
       }
-      .acct-head { min-width: 0; }
+      .acct.dragging { opacity: .4; }
+      .acct-head { min-width: 0; display: flex; align-items: flex-start; gap: 6px; }
+      .drag-handle {
+        flex-shrink: 0; margin-top: 2px; width: 14px; height: 20px;
+        cursor: grab; color: var(--muted); font-size: 13px; line-height: 20px;
+        text-align: center; user-select: none;
+      }
+      .drag-handle:active { cursor: grabbing; }
+      .acct-head-main { min-width: 0; flex: 1; }
       .name-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
       .acct-name {
         min-width: 0; font-size: 15px; line-height: 1.2; font-weight: 800;
@@ -118,6 +126,10 @@
       .usage-reset { min-height: 13px; margin-top: 3px; font-size: 9px; color: #6f7682; }
 
       .usage-none { font-size: 12px; color: #6b7280; margin-top: 10px; }
+
+      .usage-stack.is-stale .usage-pct { color: #8b8f98; }
+      .usage-stack.is-stale .gauge-fill { background: #565b66; }
+      .usage-stale-note { font-size: 9px; color: #6f7682; margin-top: 6px; }
 
       .row-actions {
         display: flex; gap: 8px; margin-top: auto; padding-top: 10px;
@@ -294,6 +306,8 @@
           loadFailed: "Failed to load: ",
           resetsIn: "resets in {rel}",
           usageNone: "Usage unavailable — token may be expired.",
+          usageStale: "Updated {rel} ago",
+          dragReorder: "Drag to reorder — sets the auto-switch order",
           optTestCli: "Test CLI restart (no account change)",
           testCliRun: "Testing CLI restart…",
           testCliNone: "No running {p} CLI sessions found.",
@@ -339,6 +353,8 @@
           loadFailed: "불러오기 실패: ",
           resetsIn: "{rel} 후 리셋",
           usageNone: "사용량 조회 불가 — 토큰이 만료됐을 수 있습니다.",
+          usageStale: "{rel} 전 갱신됨",
+          dragReorder: "드래그하여 순서 변경 — 자동 전환 순서에 반영됩니다",
           optTestCli: "CLI 재시작 테스트 (계정 변경 없음)",
           testCliRun: "CLI 재시작 테스트 중…",
           testCliNone: "실행 중인 {p} CLI 세션이 없습니다.",
@@ -384,6 +400,8 @@
           loadFailed: "読み込み失敗: ",
           resetsIn: "{rel} 後にリセット",
           usageNone: "使用量を取得できません — トークン期限切れの可能性。",
+          usageStale: "{rel} 前に更新",
+          dragReorder: "ドラッグして並べ替え — 自動切替の順序に反映されます",
           optTestCli: "CLI 再起動テスト（アカウント変更なし）",
           testCliRun: "CLI 再起動をテスト中…",
           testCliNone: "実行中の {p} CLI セッションがありません。",
@@ -429,6 +447,8 @@
           loadFailed: "加载失败：",
           resetsIn: "{rel} 后重置",
           usageNone: "无法获取用量 — 令牌可能已过期。",
+          usageStale: "{rel}前更新",
+          dragReorder: "拖动以调整顺序 — 将用于自动切换顺序",
           optTestCli: "测试 CLI 重启（不切换账号）",
           testCliRun: "正在测试 CLI 重启…",
           testCliNone: "没有正在运行的 {p} CLI 会话。",
@@ -499,6 +519,17 @@
       const usedPct = (w) => Math.max(0, Math.min(100, Math.round(w.usedPercent || 0)));
       const gaugeTone = (n) => (n >= 90 ? "red" : n >= 70 ? "amber" : "green");
 
+      // A poll cycle can legitimately fail once (rate limit, transient network
+      // error) without the number being wrong yet; only call it stale once
+      // it's been sitting well past a normal refresh window.
+      const STALE_AFTER_MS = 10 * 60 * 1000;
+      function fmtAge(updatedAt) {
+        const mins = Math.max(0, Math.round((Date.now() - updatedAt) / 60000));
+        const h = Math.floor(mins / 60), m = mins % 60;
+        const rel = h > 0 ? `${h}h ${m}m` : `${m}m`;
+        return fmt(M.usageStale, { rel });
+      }
+
       function usageRow(label, w) {
         const used = usedPct(w);
         return `<div class="usage-row" data-tone="${gaugeTone(used)}">
@@ -526,7 +557,7 @@
         return M.usagePrimary;
       }
 
-      function usageRows(prov, usage) {
+      function usageRows(prov, usage, updatedAt) {
         if (!usage) return "";
         const rows = [
           [primaryLabel(usage.primary), usage.primary],
@@ -539,7 +570,9 @@
         // the unavailable message is reserved for no usage data at all.
         const present = rows.filter((row) => row[1]);
         if (present.length === 0) return "";
-        return `<div class="usage-stack">${present.map((row) => usageRow(row[0], row[1])).join("")}</div>`;
+        const stale = updatedAt && Date.now() - updatedAt > STALE_AFTER_MS;
+        const staleNote = stale ? `<div class="usage-stale-note">${fmtAge(updatedAt)}</div>` : "";
+        return `<div class="usage-stack${stale ? " is-stale" : ""}">${present.map((row) => usageRow(row[0], row[1])).join("")}</div>${staleNote}`;
       }
 
       function header(prov, a) {
@@ -556,23 +589,26 @@
         const sub = email && email !== a.name ? email : "";
         const emailLine = sub ? `<div class="acct-email">${esc(sub)}</div>` : "";
         return `<div class="acct-head">
-          <div class="name-row">
-            <div class="acct-name">${esc(displayName)}</div>
-            ${active}
-            ${badge}
-            ${state}
-            ${toggle}
+          <span class="drag-handle" title="${esc(M.dragReorder)}">⠿</span>
+          <div class="acct-head-main">
+            <div class="name-row">
+              <div class="acct-name">${esc(displayName)}</div>
+              ${active}
+              ${badge}
+              ${state}
+              ${toggle}
+            </div>
+            ${emailLine}
           </div>
-          ${emailLine}
         </div>`;
       }
 
       function renderCard(prov, a) {
-        const rows = usageRows(prov, a.usage) || `<div class="usage-none">${M.usageNone}</div>`;
+        const rows = usageRows(prov, a.usage, a.usageUpdatedAt) || `<div class="usage-none">${M.usageNone}</div>`;
         const switchButton = a.active || !a.enabled
           ? ""
           : `<button class="switch-btn" data-act="switch" data-p="${esc(prov)}" data-n="${esc(a.name)}">${M.switchTo}</button>`;
-        return `<div class="acct ${a.active ? "active" : ""}">
+        return `<div class="acct ${a.active ? "active" : ""}" draggable="true" data-prov="${esc(prov)}" data-name="${esc(a.name)}">
           ${header(prov, a)}
           ${rows}
           <div class="row-actions">
@@ -584,6 +620,20 @@
           </div>
           ${renameRow(prov, a.name)}
         </div>`;
+      }
+
+      let rotationOrders = {}; // { [prov]: string[] }, mirrors config.<prov>.rotationOrder
+
+      // The rotation order (not "active first") drives the on-screen order,
+      // since dragging this list is what sets rotationOrder — the active
+      // account keeps its normal position and is called out via its badge.
+      function applyRotationOrder(prov, accounts) {
+        const order = rotationOrders[prov] || [];
+        if (order.length === 0) return accounts;
+        const byName = new Map(accounts.map((a) => [a.name, a]));
+        const ordered = order.map((name) => byName.get(name)).filter(Boolean);
+        const seen = new Set(order);
+        return [...ordered, ...accounts.filter((a) => !seen.has(a.name))];
       }
 
       function renderCol(prov, accounts) {
@@ -603,8 +653,7 @@
           list.innerHTML = `<div class="empty">${M.empty}</div>`;
           return;
         }
-        // Live account first, then the rest.
-        const ordered = [...accounts].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
+        const ordered = applyRotationOrder(prov, accounts);
         list.innerHTML = ordered
           .map((a) => renderCard(prov, a))
           .join("");
@@ -612,12 +661,19 @@
 
       // Sequence token: a slow in-flight list() must never overwrite a newer render.
       let refreshSeq = 0;
+      let dragState = null;
       async function refresh() {
+        if (dragState) return; // don't yank the list out from under an active drag
         const seq = ++refreshSeq;
         try {
           const lang = await window.rotator.getLang().catch(() => "en");
           M = DICTS[lang] || DICTS.en;
           if (provList.length === 0) provList = await window.rotator.providers();
+          const cfg = await window.rotator.getConfig().catch(() => null);
+          if (cfg) {
+            rotationOrders = {};
+            for (const p of provList) rotationOrders[p.id] = (cfg[p.id] || {}).rotationOrder || [];
+          }
           applyStatic();
           await Promise.all(
             provList.map(async (p) => {
@@ -630,6 +686,52 @@
           if (seq === refreshSeq) msg(M.loadFailed + e);
         }
       }
+
+      function handleDragStart(e) {
+        const handle = e.target.closest(".drag-handle");
+        if (!handle) { e.preventDefault(); return; }
+        const card = handle.closest(".acct");
+        dragState = { prov: card.dataset.prov };
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", card.dataset.name);
+        card.classList.add("dragging");
+      }
+
+      function handleDragEnd(e) {
+        const card = e.target.closest(".acct");
+        if (card) card.classList.remove("dragging");
+        dragState = null;
+      }
+
+      function handleDragOver(e) {
+        if (!dragState) return;
+        const card = e.target.closest(".acct");
+        if (!card || card.dataset.prov !== dragState.prov) return;
+        e.preventDefault();
+        const list = card.parentElement;
+        const dragging = list.querySelector(".acct.dragging");
+        if (!dragging || dragging === card) return;
+        const rect = card.getBoundingClientRect();
+        const before = e.clientY - rect.top < rect.height / 2;
+        list.insertBefore(dragging, before ? card : card.nextSibling);
+      }
+
+      async function handleDrop(e) {
+        if (!dragState) return;
+        e.preventDefault();
+        const { prov } = dragState;
+        const list = $("list-" + prov);
+        const order = Array.from(list.querySelectorAll(".acct")).map((el) => el.dataset.name);
+        dragState = null;
+        rotationOrders[prov] = order;
+        await window.rotator.setConfig({ [prov]: { rotationOrder: order } });
+        refresh();
+      }
+
+      document.querySelector(".cols").addEventListener("dragstart", handleDragStart);
+      document.querySelector(".cols").addEventListener("dragend", handleDragEnd);
+      document.querySelector(".cols").addEventListener("dragover", handleDragOver);
+      document.querySelector(".cols").addEventListener("drop", handleDrop);
 
       document.querySelector(".cols").addEventListener("click", async (e) => {
         const btn = e.target.closest("button");

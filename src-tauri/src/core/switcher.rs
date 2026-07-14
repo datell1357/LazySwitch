@@ -235,6 +235,9 @@ mod tests {
         fn cached_usage(&self, name: Option<&str>) -> Option<PUsage> {
             name.and_then(|name| self.usage.get(name)).cloned()
         }
+        fn cached_usage_updated_at(&self, _name: Option<&str>) -> Option<i64> {
+            None
+        }
     }
     fn provider(
         names: &[&str],

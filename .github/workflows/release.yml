@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo/target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      # The updater pubkey is already committed in tauri.conf.json, so a
+      # missing private key fails the whole bundle step (not just the
+      # updater artifact) — catch it here with a clearer message than the
+      # raw Tauri CLI error.
+      - name: Require updater signing secret
+        shell: pwsh
+        run: |
+          if (-not "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}") {
+            Write-Error "TAURI_SIGNING_PRIVATE_KEY secret is not set. Add it (and TAURI_SIGNING_PRIVATE_KEY_PASSWORD, if the key has one) under this repo's Settings > Secrets and variables > Actions before pushing a release tag."
+            exit 1
+          }
+
+      - name: Build and publish
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: src-tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: "LazySwitch ${{ github.ref_name }}"
+          releaseBody: "See the assets below to download and install this version."
+          releaseDraft: true
+          prerelease: false

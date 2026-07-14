@@ -105,6 +105,7 @@ pub trait Provider: Send + Sync {
         name: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = Option<PUsage>> + Send + 'a>>;
     fn cached_usage(&self, name: Option<&str>) -> Option<PUsage>;
+    fn cached_usage_updated_at(&self, name: Option<&str>) -> Option<i64>;
     fn desktop_restart<'a>(
         &'a self,
         _prefs: &'a ProviderPrefs,

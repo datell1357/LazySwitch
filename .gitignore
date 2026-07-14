@@ -12,6 +12,5 @@ lazyswitch.txt
 # Rust / Tauri
 src-tauri/target/
 src-tauri/target-cli/
-src-tauri/binaries/
 
 src-tauri/cli-bundle/*.exe
