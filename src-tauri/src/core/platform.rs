@@ -33,8 +33,9 @@ mod windows_impl {
         FindWindowExW, FindWindowW, GetWindow, GetWindowLongPtrW,
         GetWindowRect, GetTopWindow, SetForegroundWindow, SetWindowPos, ShowWindow,
         SetLayeredWindowAttributes, SetWindowLongPtrW, GWL_EXSTYLE, GW_HWNDNEXT,
-        HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, LWA_ALPHA, SWP_NOACTIVATE, SWP_NOMOVE,
-        SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE, WS_EX_LAYERED, WS_EX_TRANSPARENT,
+        HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, LWA_ALPHA, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_RESTORE, WS_EX_LAYERED,
+        WS_EX_TRANSPARENT,
     };
     use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
     use windows::Win32::System::DataExchange::{EmptyClipboard, OpenClipboard, SetClipboardData, CloseClipboard};
@@ -121,6 +122,19 @@ mod windows_impl {
             let next = if enabled { current | WS_EX_LAYERED.0 } else { current & !WS_EX_LAYERED.0 };
             let _ = SetWindowLongPtrW(window, GWL_EXSTYLE, next as isize);
             if enabled { let _ = SetLayeredWindowAttributes(window, windows::Win32::Foundation::COLORREF(0), 255, LWA_ALPHA); }
+            // Changing GWL_EXSTYLE on an already-visible window doesn't take
+            // visual effect on its own — Windows only re-evaluates the frame
+            // (and starts/stops compositing it as layered) once SWP_FRAMECHANGED
+            // is requested via SetWindowPos.
+            let _ = SetWindowPos(
+                window,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
         }
     }
 

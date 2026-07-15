@@ -284,14 +284,22 @@ pub fn apply_widget_platform(app: &AppHandle, window: &WebviewWindow, config: &A
                 // (the tray/context-menu "maximize" action) leaves the HWND
                 // at its old compact size unless bounds are reapplied here —
                 // this can't be gated on x/y being set, since most widgets
-                // never had a custom position dragged into config.
-                let x = config.usage_widget.x.unwrap_or(0.0);
-                let y = config.usage_widget.y.unwrap_or(0.0);
+                // never had a custom position dragged into config. Most
+                // configs also never have x/y (nobody dragged the full-size
+                // window), so falling back to (0, 0) would snap the widget
+                // to the top-left corner on every restore; keep whatever
+                // top-left corner it's already showing at instead.
+                let (left, top) = match (config.usage_widget.x, config.usage_widget.y) {
+                    (Some(x), Some(y)) => (x.round() as i32, y.round() as i32),
+                    _ => platform::rect(hwnd_value)
+                        .map(|current| (current.left, current.top))
+                        .unwrap_or((0, 0)),
+                };
                 let bounds = platform::Rect {
-                    left: x.round() as i32,
-                    top: y.round() as i32,
-                    right: (x + config.usage_widget.width).round() as i32,
-                    bottom: (y + config.usage_widget.height).round() as i32,
+                    left,
+                    top,
+                    right: left + config.usage_widget.width.round() as i32,
+                    bottom: top + config.usage_widget.height.round() as i32,
                 };
                 platform::set_bounds(hwnd_value, bounds, config.usage_widget.always_on_top);
             }
@@ -323,6 +331,22 @@ pub fn sync_widget_after_config_change(app: &AppHandle, previous: &AppConfig, ne
         return;
     };
     if previous_transparent != next_transparent {
+        // Restoring from compact mode destroys and recreates the window (see
+        // the module doc comment above); a brand new window with no explicit
+        // position gets whatever default spot the OS picks, which reads as
+        // "snapped back to the top-left corner". Remember exactly where the
+        // compact widget was sitting so the recreated window reappears there.
+        if previous.usage_widget.minimized && !next.usage_widget.minimized {
+            if let Ok(position) = widget.outer_position() {
+                let state = app.state::<AppState>();
+                let lock_result = state.config.lock();
+                if let Ok(mut config) = lock_result {
+                    config.usage_widget.x = Some(position.x as f64);
+                    config.usage_widget.y = Some(position.y as f64);
+                    let _ = crate::core::config::save_config(&config);
+                }
+            }
+        }
         let _ = widget.destroy();
         let app_for_recreate = app.clone();
         tauri::async_runtime::spawn(async move {
