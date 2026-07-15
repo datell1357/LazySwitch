@@ -38,6 +38,7 @@ mod windows_impl {
     };
     use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
     use windows::Win32::System::DataExchange::{EmptyClipboard, OpenClipboard, SetClipboardData, CloseClipboard};
+    use windows::Win32::Globalization::GetUserDefaultLocaleName;
     const CF_UNICODETEXT: u32 = 13;
 
     const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
@@ -260,6 +261,21 @@ mod windows_impl {
         result.ok().ok().map(|_| value)
     }
 
+    pub fn system_locale() -> Option<String> {
+        // Windows has no POSIX `LANG` env var; the UI language has to come
+        // from the OS locale API instead.
+        let mut buffer = [0u16; 85]; // LOCALE_NAME_MAX_LENGTH
+        let len = unsafe { GetUserDefaultLocaleName(&mut buffer) };
+        if len == 0 {
+            return None;
+        }
+        let end = buffer[..len as usize]
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(len as usize - 1);
+        Some(String::from_utf16_lossy(&buffer[..end]))
+    }
+
     pub fn taskbar_theme() -> Option<bool> {
         let system_light = reg_dword(w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"), w!("SystemUsesLightTheme"));
         let prevalence = reg_dword(w!("Software\\Microsoft\\Windows\\DWM"), w!("ColorPrevalence"));
@@ -355,6 +371,9 @@ pub fn set_clipboard_text(_value: &str) -> bool { false }
 
 #[cfg(not(windows))]
 pub fn taskbar_theme() -> Option<bool> { None }
+
+#[cfg(not(windows))]
+pub fn system_locale() -> Option<String> { None }
 
 #[cfg(not(windows))]
 pub fn acquire_single_instance() -> bool { true }

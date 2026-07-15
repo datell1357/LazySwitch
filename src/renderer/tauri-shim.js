@@ -25,7 +25,7 @@
       invoke("accounts:setEnabled", { provider, name, enabled }),
     remove: (provider, name) => invoke("accounts:remove", { provider, name }),
     rename: (provider, oldName, newName) =>
-      invoke("accounts:rename", { provider, old_name: oldName, new_name: newName }),
+      invoke("accounts:rename", { provider, oldName, newName }),
     importCurrent: (provider, name) =>
       invoke("accounts:importCurrent", { provider, name }),
     addViaLogin: (provider) => invoke("accounts:addViaLogin", { provider }),
@@ -37,7 +37,7 @@
     widgetContextMenu: () => send("widget:context-menu"),
 
     finishOnboarding: (openAccounts) =>
-      invoke("onboarding:finish", { open_accounts: openAccounts }),
+      invoke("onboarding:finish", { openAccounts }),
 
     onChanged: (cb) => event.listen("accounts:changed", () => cb()),
     onWidgetTaskbarTheme: (cb) =>

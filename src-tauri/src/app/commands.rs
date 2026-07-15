@@ -296,7 +296,7 @@ pub fn config_get(state: tauri::State<'_, AppState>) -> AppConfig {
 #[tauri::command(rename = "lang:get")]
 pub fn lang_get(state: tauri::State<'_, AppState>) -> String {
     let config = state_config(&state);
-    let locale = std::env::var("LANG").ok();
+    let locale = platform::system_locale();
     format!(
         "{:?}",
         crate::core::i18n::resolve_lang(&config.language, locale.as_deref())
@@ -576,6 +576,7 @@ pub fn probe_report(
         let app = app.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(250));
+            super::ALLOW_EXIT.store(true, std::sync::atomic::Ordering::SeqCst);
             app.exit(0);
         });
     }

@@ -22,7 +22,7 @@ pub fn run() {
     if !platform::acquire_single_instance() {
         return;
     }
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(build_state())
         .invoke_handler(tauri::generate_handler![
@@ -129,6 +129,21 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .unwrap_or_else(|error| eprintln!("error while running tauri application: {error}"));
+        .build(tauri::generate_context!());
+
+    match app {
+        // Closing every window (all accounts removed, onboarding skipped
+        // with nothing enrolled yet, etc.) must not kill the tray icon —
+        // only the "Quit" menu item and the probe harness's own app.exit()
+        // (both of which set app::ALLOW_EXIT first) should actually
+        // terminate the process.
+        Ok(app) => app.run(|_app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                if !crate::app::ALLOW_EXIT.load(std::sync::atomic::Ordering::SeqCst) {
+                    api.prevent_exit();
+                }
+            }
+        }),
+        Err(error) => eprintln!("error while running tauri application: {error}"),
+    }
 }

@@ -13,7 +13,7 @@ use super::windows::{open_manager, open_onboarding, open_widget, open_widget_set
 
 pub fn tray_lang(state: &AppState) -> i18n::Lang {
     let config = state_config(state);
-    i18n::resolve_lang(&config.language, std::env::var("LANG").ok().as_deref())
+    i18n::resolve_lang(&config.language, platform::system_locale().as_deref())
 }
 
 pub fn tray_text(state: &AppState, key: &str, vars: &[(&str, String)]) -> String {
@@ -142,7 +142,10 @@ pub fn tray_menu_action(app: &AppHandle, id: &str) {
             let app = app.clone();
             tauri::async_runtime::spawn(super::updater::check_and_install(app));
         }
-        "tray.quit" => app.exit(0),
+        "tray.quit" => {
+            super::ALLOW_EXIT.store(true, std::sync::atomic::Ordering::SeqCst);
+            app.exit(0);
+        }
         id if id.starts_with("tray.language.") => {
             let value = id.rsplit('.').next().unwrap_or("");
             let value = if value == "system" { "" } else { value };
