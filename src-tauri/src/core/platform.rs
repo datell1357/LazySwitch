@@ -32,9 +32,9 @@ mod windows_impl {
     use windows::Win32::UI::WindowsAndMessaging::{
         FindWindowExW, FindWindowW, GetWindow, GetWindowLongPtrW,
         GetWindowRect, GetTopWindow, SetForegroundWindow, SetWindowPos, ShowWindow,
-        SetLayeredWindowAttributes, SetWindowLongPtrW, GWL_EXSTYLE, GW_HWNDNEXT,
-        HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, LWA_ALPHA, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_RESTORE, WS_EX_LAYERED,
+        SetWindowLongPtrW, GWL_EXSTYLE, GW_HWNDNEXT,
+        HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE, WS_EX_LAYERED,
         WS_EX_TRANSPARENT,
     };
     use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
@@ -112,30 +112,6 @@ mod windows_impl {
 
     pub fn is_layered(hwnd: isize) -> bool {
         hwnd != 0 && unsafe { (GetWindowLongPtrW(HWND(hwnd as *mut _), GWL_EXSTYLE) as u32 & WS_EX_LAYERED.0) != 0 }
-    }
-
-    pub fn set_layered(hwnd: isize, enabled: bool) {
-        if hwnd == 0 { return; }
-        let window = HWND(hwnd as *mut _);
-        unsafe {
-            let current = GetWindowLongPtrW(window, GWL_EXSTYLE) as u32;
-            let next = if enabled { current | WS_EX_LAYERED.0 } else { current & !WS_EX_LAYERED.0 };
-            let _ = SetWindowLongPtrW(window, GWL_EXSTYLE, next as isize);
-            if enabled { let _ = SetLayeredWindowAttributes(window, windows::Win32::Foundation::COLORREF(0), 255, LWA_ALPHA); }
-            // Changing GWL_EXSTYLE on an already-visible window doesn't take
-            // visual effect on its own — Windows only re-evaluates the frame
-            // (and starts/stops compositing it as layered) once SWP_FRAMECHANGED
-            // is requested via SetWindowPos.
-            let _ = SetWindowPos(
-                window,
-                None,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-            );
-        }
     }
 
     pub fn is_click_through(hwnd: isize) -> bool {

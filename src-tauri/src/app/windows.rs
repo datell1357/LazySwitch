@@ -314,10 +314,16 @@ pub fn apply_widget_platform(
                 platform::set_bounds(hwnd_value, bounds, config.usage_widget.always_on_top);
             }
             let should_layer = compact && config.usage_widget.compact_position == "taskbar";
-            platform::set_layered(hwnd_value, should_layer);
-            if platform::is_layered(hwnd_value) != should_layer {
-                eprintln!("[widget] transparency style did not match requested state");
-            }
+            // Real transparency is set up once, at window-construction time,
+            // by create_window's `.transparent(true)` (see
+            // sync_widget_after_config_change, which always destroys and
+            // recreates the window for any transparency-relevant change —
+            // so construction-time state always matches `should_layer` by
+            // the time this runs). Forcing WS_EX_LAYERED back on here after
+            // the fact used to fight that: it switches the HWND into the
+            // legacy GDI-composited redirection surface, which is
+            // incompatible with WebView2's own DirectComposition swap chain
+            // and left the compact widget opaque despite the bit being set.
             // Click-through only makes sense while pinned to the taskbar in
             // compact mode; otherwise the widget must stay fully interactive.
             let should_click_through = should_layer && config.usage_widget.click_through;
