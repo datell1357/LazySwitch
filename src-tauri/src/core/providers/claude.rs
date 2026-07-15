@@ -13,6 +13,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use super::{HttpRequest, Provider, ReqwestTransport, SharedTransport};
+use crate::core::config::config_path;
 use crate::core::paths::ClaudePaths;
 use crate::core::platform;
 use crate::core::types::{LoginFlowResult, PAccount, PUsage, PWindow};
@@ -31,7 +32,7 @@ const LOGIN_REDIRECT: &str = "http://localhost:54545/callback";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct CacheEntry {
     at: i64,
     usage: Option<PUsage>,
@@ -41,6 +42,33 @@ struct CacheEntry {
 struct UsageState {
     cache: Mutex<HashMap<String, CacheEntry>>,
     rate_limited_until: Mutex<HashMap<String, i64>>,
+}
+
+// The CLI statusline binary is a short-lived process: each invocation starts
+// with an empty in-memory cache, so a single transient fetch failure (a
+// network hiccup, a brief API blip) had no last-known value to fall back to
+// and rendered "n/a" instead of the previous reading. Persisting the cache
+// to disk lets a fresh process pick up where the last one (CLI or GUI) left
+// off, so `fetch_usage`'s existing `cached.and_then(...)` fallbacks resolve
+// to the last known snapshot instead of nothing.
+fn usage_cache_path() -> std::path::PathBuf {
+    config_path()
+        .parent()
+        .map(|dir| dir.join("claude-usage-cache.json"))
+        .unwrap_or_else(|| std::path::PathBuf::from("claude-usage-cache.json"))
+}
+
+fn load_usage_cache() -> HashMap<String, CacheEntry> {
+    std::fs::read(usage_cache_path())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn save_usage_cache(cache: &HashMap<String, CacheEntry>) {
+    if let Ok(bytes) = serde_json::to_vec(cache) {
+        let _ = atomic_write(&usage_cache_path(), &bytes);
+    }
 }
 
 pub struct ClaudeProvider {
@@ -63,7 +91,10 @@ impl ClaudeProvider {
         Self {
             paths,
             transport,
-            usage: UsageState::default(),
+            usage: UsageState {
+                cache: Mutex::new(load_usage_cache()),
+                rate_limited_until: Mutex::new(HashMap::new()),
+            },
         }
     }
 
@@ -704,6 +735,7 @@ impl Provider for ClaudeProvider {
                         usage: Some(usage.clone()),
                     },
                 );
+                save_usage_cache(&cache);
             }
             if let Ok(mut map) = self.usage.rate_limited_until.lock() {
                 map.remove(&key);
