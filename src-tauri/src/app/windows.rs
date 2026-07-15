@@ -279,7 +279,14 @@ pub fn apply_widget_platform(app: &AppHandle, window: &WebviewWindow, config: &A
                 {
                     super::monitor::start_widget_topmost_timer(app.clone());
                 }
-            } else if let (Some(x), Some(y)) = (config.usage_widget.x, config.usage_widget.y) {
+            } else {
+                // Restoring from compact mode without recreating the window
+                // (the tray/context-menu "maximize" action) leaves the HWND
+                // at its old compact size unless bounds are reapplied here —
+                // this can't be gated on x/y being set, since most widgets
+                // never had a custom position dragged into config.
+                let x = config.usage_widget.x.unwrap_or(0.0);
+                let y = config.usage_widget.y.unwrap_or(0.0);
                 let bounds = platform::Rect {
                     left: x.round() as i32,
                     top: y.round() as i32,
@@ -298,6 +305,34 @@ pub fn apply_widget_platform(app: &AppHandle, window: &WebviewWindow, config: &A
             let should_click_through = should_layer && config.usage_widget.click_through;
             platform::set_click_through(hwnd_value, should_click_through);
         }
+    }
+}
+
+/// Applies a config change that may affect the widget window, recreating it
+/// when the compact+taskbar transparency flag flips (Tauri's `transparent`
+/// window attribute is fixed at construction time) and just re-applying
+/// platform bounds/styling otherwise. Used by both `config:set` and any
+/// tray/context-menu action that flips `minimized` directly, so every path
+/// that can change compact state behaves the same way.
+pub fn sync_widget_after_config_change(app: &AppHandle, previous: &AppConfig, next: &AppConfig) {
+    let previous_transparent =
+        previous.usage_widget.minimized && previous.usage_widget.compact_position == "taskbar";
+    let next_transparent =
+        next.usage_widget.minimized && next.usage_widget.compact_position == "taskbar";
+    let Some(widget) = app.get_webview_window("widget") else {
+        return;
+    };
+    if previous_transparent != next_transparent {
+        let _ = widget.destroy();
+        let app_for_recreate = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            open_widget(&app_for_recreate, true);
+        });
+    } else {
+        let _ = widget.set_always_on_top(next.usage_widget.always_on_top);
+        apply_widget_platform(app, &widget, next);
+        emit_widget_taskbar_theme(app, &widget, next);
     }
 }
 

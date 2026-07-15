@@ -17,10 +17,9 @@ use super::state::{
 };
 use super::tray::show_widget_context_menu;
 use super::windows::{
-    apply_widget_platform, broadcast_changed, clamp_toasts, close_window,
-    emit_widget_taskbar_theme, emit_to, notify, open_external, open_manager, open_widget,
-    sync_usage_widget, TOAST_DEFAULT_HEIGHT, TOAST_MAX_HEIGHT, TOAST_MIN_HEIGHT,
-    WIDGET_COMPACT_MIN_HEIGHT, WIDGET_COMPACT_WIDTH,
+    apply_widget_platform, broadcast_changed, clamp_toasts, close_window, emit_to, notify,
+    open_external, open_manager, sync_usage_widget, TOAST_DEFAULT_HEIGHT, TOAST_MAX_HEIGHT,
+    TOAST_MIN_HEIGHT, WIDGET_COMPACT_MIN_HEIGHT, WIDGET_COMPACT_WIDTH,
 };
 
 #[tauri::command(rename = "providers:list")]
@@ -349,24 +348,7 @@ pub fn config_set(
                 .map_err(|error| format!("start at login: {error}"))?;
         }
     }
-    let previous_transparent =
-        previous.usage_widget.minimized && previous.usage_widget.compact_position == "taskbar";
-    let next_transparent =
-        next.usage_widget.minimized && next.usage_widget.compact_position == "taskbar";
-    if let Some(widget) = app.get_webview_window("widget") {
-        if previous_transparent != next_transparent {
-            let _ = widget.destroy();
-            let app_for_recreate = app.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                open_widget(&app_for_recreate, true);
-            });
-        } else {
-            let _ = widget.set_always_on_top(next.usage_widget.always_on_top);
-            apply_widget_platform(&app, &widget, &next);
-            emit_widget_taskbar_theme(&app, &widget, &next);
-        }
-    }
+    super::windows::sync_widget_after_config_change(&app, &previous, &next);
     sync_usage_widget(&app);
     broadcast_changed(&app);
     Ok(next)

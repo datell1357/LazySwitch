@@ -9,7 +9,9 @@ use crate::core::platform;
 
 use super::commands::widget_close;
 use super::state::{state_config, AppState};
-use super::windows::{open_manager, open_onboarding, open_widget, open_widget_settings};
+use super::windows::{
+    open_manager, open_onboarding, open_widget_settings, sync_widget_after_config_change,
+};
 
 pub fn tray_lang(state: &AppState) -> i18n::Lang {
     let config = state_config(state);
@@ -154,11 +156,13 @@ pub fn tray_menu_action(app: &AppHandle, id: &str) {
         "widget.settings" => open_widget_settings(app),
         "widget.maximize" => {
             let state = app.state::<AppState>();
+            let previous = state_config(&state);
             if let Ok(mut config) = state.config.lock() {
                 config.usage_widget.minimized = false;
                 let _ = crate::core::config::save_config(&config);
             }
-            open_widget(app, true);
+            let next = state_config(&state);
+            sync_widget_after_config_change(app, &previous, &next);
         }
         "widget.close" => widget_close(app.clone(), app.state::<AppState>()),
         _ => {}
