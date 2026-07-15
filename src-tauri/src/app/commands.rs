@@ -416,7 +416,7 @@ pub fn widget_compact_height(
         WIDGET_COMPACT_WIDTH as u32,
         next as u32,
     ));
-    apply_widget_platform(&app, &window, &state_config(&state));
+    apply_widget_platform(&app, &window, &state_config(&state), true);
 }
 
 #[tauri::command(rename = "widget:context-menu")]

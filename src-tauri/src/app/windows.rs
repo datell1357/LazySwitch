@@ -161,7 +161,11 @@ pub fn open_widget(app: &AppHandle, force: bool) {
     if let Some(window) = app.get_webview_window("widget") {
         let _ = window.show();
         let _ = window.set_always_on_top(config.usage_widget.always_on_top);
-        apply_widget_platform(app, &window, &config);
+        // This path runs on every routine sync (each account's usage refresh
+        // completing, etc.), not just real compact/full transitions — forcing
+        // bounds here would snap a window the user just dragged back to
+        // whatever position was last saved. Only reassert styling.
+        apply_widget_platform(app, &window, &config, false);
         return;
     }
     // Several async paths (each account's usage refresh completing, the
@@ -229,7 +233,7 @@ pub fn open_widget(app: &AppHandle, force: bool) {
             } else if config.usage_widget.x.is_some() || config.usage_widget.y.is_some() {
                 set_window_bounds(&window, x, y, width, height);
             }
-            apply_widget_platform(app, &window, &config);
+            apply_widget_platform(app, &window, &config, true);
             emit_widget_taskbar_theme(app, &window, &config);
         }
         Err(error) => eprintln!("[tauri:widget] {error}"),
@@ -251,7 +255,12 @@ pub fn emit_widget_taskbar_theme(app: &AppHandle, _window: &WebviewWindow, confi
     }
 }
 
-pub fn apply_widget_platform(app: &AppHandle, window: &WebviewWindow, config: &AppConfig) {
+pub fn apply_widget_platform(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    config: &AppConfig,
+    reposition: bool,
+) {
     let compact = config.usage_widget.minimized;
     let _ = window.set_resizable(!compact);
     #[cfg(windows)]
@@ -266,6 +275,10 @@ pub fn apply_widget_platform(app: &AppHandle, window: &WebviewWindow, config: &A
             let height = size.height as i32;
             let hwnd_value = hwnd.0 as isize;
             if compact {
+                // The compact corner is computed from live monitor/taskbar
+                // geometry, not something the user can drag away from, so
+                // it's fine (and necessary, e.g. after a monitor change) to
+                // keep reasserting it on every call.
                 if let Some(bounds) = platform::compact_bounds(
                     hwnd_value,
                     width,
@@ -279,16 +292,13 @@ pub fn apply_widget_platform(app: &AppHandle, window: &WebviewWindow, config: &A
                 {
                     super::monitor::start_widget_topmost_timer(app.clone());
                 }
-            } else {
-                // Restoring from compact mode without recreating the window
-                // (the tray/context-menu "maximize" action) leaves the HWND
-                // at its old compact size unless bounds are reapplied here —
-                // this can't be gated on x/y being set, since most widgets
-                // never had a custom position dragged into config. Most
-                // configs also never have x/y (nobody dragged the full-size
-                // window), so falling back to (0, 0) would snap the widget
-                // to the top-left corner on every restore; keep whatever
-                // top-left corner it's already showing at instead.
+            } else if reposition {
+                // Only reapply full-size bounds on an actual creation or
+                // compact/full transition. This function also runs on every
+                // routine sync (each account's usage refresh completing,
+                // etc.) via open_widget's "already exists" path; forcing
+                // bounds there would snap a window the user just dragged
+                // back to whatever position was last saved every ~30s.
                 let (left, top) = match (config.usage_widget.x, config.usage_widget.y) {
                     (Some(x), Some(y)) => (x.round() as i32, y.round() as i32),
                     _ => platform::rect(hwnd_value)
@@ -331,12 +341,14 @@ pub fn sync_widget_after_config_change(app: &AppHandle, previous: &AppConfig, ne
         return;
     };
     if previous_transparent != next_transparent {
-        // Restoring from compact mode destroys and recreates the window (see
-        // the module doc comment above); a brand new window with no explicit
-        // position gets whatever default spot the OS picks, which reads as
-        // "snapped back to the top-left corner". Remember exactly where the
-        // compact widget was sitting so the recreated window reappears there.
-        if previous.usage_widget.minimized && !next.usage_widget.minimized {
+        // Minimizing (full -> compact) destroys and recreates the window
+        // (see the module doc comment above). Remember exactly where the
+        // full-size window was sitting *before* it goes compact, so that
+        // maximizing later restores to that position — using the compact
+        // widget's own (taskbar-corner) position instead would leave the
+        // much bigger full-size window mostly off the taskbar-side edge of
+        // the screen when it's restored.
+        if !previous.usage_widget.minimized && next.usage_widget.minimized {
             if let Ok(position) = widget.outer_position() {
                 let state = app.state::<AppState>();
                 let lock_result = state.config.lock();
@@ -355,7 +367,7 @@ pub fn sync_widget_after_config_change(app: &AppHandle, previous: &AppConfig, ne
         });
     } else {
         let _ = widget.set_always_on_top(next.usage_widget.always_on_top);
-        apply_widget_platform(app, &widget, next);
+        apply_widget_platform(app, &widget, next, true);
         emit_widget_taskbar_theme(app, &widget, next);
     }
 }
