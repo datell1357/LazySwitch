@@ -53,6 +53,7 @@ pub struct RuntimeData {
     pub widget_context_menu_open: bool,
     pub widget_topmost_timer_started: bool,
     pub switch_prompt_shown: HashMap<String, i64>,
+    pub creating_widget: bool,
 }
 
 pub struct AppState {

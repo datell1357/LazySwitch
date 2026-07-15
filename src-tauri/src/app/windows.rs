@@ -164,8 +164,28 @@ pub fn open_widget(app: &AppHandle, force: bool) {
         apply_widget_platform(app, &window, &config);
         return;
     }
+    // Several async paths (each account's usage refresh completing, the
+    // onboarding-finish double sync) can all decide "no widget yet, make
+    // one" within the same tick. Without this guard that races into two
+    // real windows sharing the "widget" label, where only one stays
+    // reachable via get_webview_window and the other is an orphan.
+    let should_create = state
+        .runtime
+        .lock()
+        .map(|mut runtime| {
+            if runtime.creating_widget {
+                false
+            } else {
+                runtime.creating_widget = true;
+                true
+            }
+        })
+        .unwrap_or(false);
+    if !should_create {
+        return;
+    }
     let (x, y, width, height) = widget_bounds(&config);
-    match create_window(
+    let result = create_window(
         app,
         "widget",
         "widget.html",
@@ -175,7 +195,11 @@ pub fn open_widget(app: &AppHandle, force: bool) {
         false,
         config.usage_widget.always_on_top,
         config.usage_widget.minimized && config.usage_widget.compact_position == "taskbar",
-    ) {
+    );
+    if let Ok(mut runtime) = state.runtime.lock() {
+        runtime.creating_widget = false;
+    }
+    match result {
         Ok(window) => {
             let app_for_theme = app.clone();
             window.on_window_event(move |event| {
