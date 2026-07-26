@@ -44,7 +44,7 @@ module that claims to port it, to verify nothing has drifted.
   scoped to exactly the new file paths, and double check with `git status`
   afterward that nothing else got touched — `cargo fmt -- path/to/file.rs`
   in this workspace has repeatedly been observed to reformat the *entire*
-  crate instead of just that file (this has happened four times now), so
+  crate instead of just that file (this has happened five times now), so
   always verify before trusting it, and if it happens, stop and ask before
   restoring rather than committing through it.
 - **Environment note**: this machine's `cargo` sometimes can't reach the
@@ -60,6 +60,14 @@ module that claims to port it, to verify nothing has drifted.
   just `add`/`commit`) can hit a sandbox permission wall there. That's a
   known environment quirk, not something to work around yourself — flag it
   back for a re-invocation with sandbox bypass for that step.
+- **Verification note**: Claude independently rebuilds/retests every
+  reported "done" (not just trusting the report), and periodically runs
+  `npx tauri build --debug` + launches the actual `app.exe` to check it
+  doesn't crash and to grep for functions that compile-warn as "never
+  used" — that's how gaps like the one below get caught. Expect this kind
+  of check between dispatches; it's not a sign anything is wrong, just due
+  diligence given how much of this app is safety/behavior-sensitive
+  (account credentials, process termination, etc.).
 
 ## Done so far (see `git log` for exact commits)
 
@@ -89,16 +97,18 @@ module that claims to port it, to verify nothing has drifted.
 - `switcher.rs`, `monitor.rs` — rotation/exhaustion math and the usage-polling
   loop. `UsageMonitor` runs a tokio background task and takes plain callback
   closures (`on_usage`, `on_limit_hit`) instead of depending on
-  `tauri::AppHandle` directly.
+  `tauri::AppHandle` directly. **Not started/started anywhere yet** — see
+  "Current task" below, this is the main gap it fills.
 - `atomic_fs.rs` — shared atomic-write/atomic-copy helper.
 - `cli_resume_routing.rs`, `codex_rollouts.rs`, `claude_sessions.rs`,
   `cli_cwd_script.rs`, `powershell.rs` (shared PowerShell-exec helper —
   `desktop_processes.rs` has its own older private copy of the same
   pattern; leave that one alone, only new code should use this shared one),
   `cli_sessions.rs`, `cli_hooks.rs` — CLI session detection/restart
-  infrastructure. `cli_hooks.rs`'s `install_hooks`/`install_codex_wrapper_hook`
-  take the standalone CLI's `cli.js` path as a parameter rather than
-  hardcoding it — still unresolved, see "Open decision" below.
+  infrastructure. `cli_hooks.rs`'s `install_hooks` is fully implemented but
+  **never called anywhere yet** (see "Open decision" below — its `cli.js`
+  path parameter is unresolved, so wiring it is deliberately deferred to
+  Phase 6/packaging, not this task).
 - `tray_pin.rs`, `app_notify.rs`, `cli_handover.rs` — `app_notify.rs` and
   `cli_handover.rs` both use a dependency-injection trait
   (`ToastWindowFactory`, `CliHandoverDeps`) to defer actual Tauri window
@@ -110,15 +120,21 @@ module that claims to port it, to verify nothing has drifted.
   (checkmark-based language selection — Tauri v2 has no native radio menu
   item), `TODO(window-layer)` markers where window creation is still needed.
 - `windows/manager.rs`, `windows/onboarding.rs`, `windows/approval.rs`,
-  `windows/notify.rs`, `windows/cli_restart.rs` — 5 of the 7 windows. Tray
-  menu items and double-click open manager/onboarding; startup
-  onboarding-vs-manager routing is wired into `lib.rs`. `notify.rs` is the
-  real `ToastWindowFactory` implementation (extended that trait with
-  positioning/resizing methods) and `cli_restart.rs` is the real
-  `CliHandoverDeps` implementation (uses `arboard` for clipboard,
-  `tauri-plugin-notification` for native OS notifications).
-- 112 unit tests across these modules, all passing (`cargo test`) — verified
-  independently, not just via your own report, at each step so far.
+  `windows/notify.rs`, `windows/cli_restart.rs`, `windows/widget.rs`
+  (full-mode only), `windows/widget_settings.rs` — 7 of 7 windows now
+  *exist and open*, but several are inert: the manager/onboarding pages
+  have no `accounts:*` IPC or renderer bridge to call yet, and
+  `windows/widget_settings.rs`'s `open_widget_settings` /
+  `windows/cli_restart.rs`'s `TauriCliHandoverDeps` are never actually
+  invoked by anything (confirmed via `cargo build`'s "never used"
+  warnings + grep) — both are waiting on the monitor/limit-hit wiring and
+  the widget's own context menu (widget-part2) respectively. This is
+  expected, not a regression — noting it so the "current task" below makes
+  sense.
+- 116 unit tests across these modules, all passing (`cargo test`) — verified
+  independently, not just via your own report, at each step so far. The
+  whole app also builds via `npx tauri build --debug` and the resulting
+  `app.exe` launches without crashing (tray icon shows, stays resident).
 
 **Known deferred item, not a bug**: tray right-click positioning
 (`tray_menu_position` in `tray.rs` is implemented/tested but never called).
@@ -127,81 +143,99 @@ without a native owner window; a real window's `popup_menu_at` might work
 once one exists. Revisit once the widget window (always-on, unlike manager/
 onboarding) exists.
 
-## Current task — widget.rs + widget_settings.rs, part 1: full mode only
+## Current task — monitor wiring, limit-hit handling, and the rest of ipc.rs
 
-Only the widget + widget-settings pair remains of the 7 windows —
-deliberately last since it's the most complex (compact/full modes, taskbar
-docking, save/restore bounds, two genuine Win32 FFI spots). It's being
-split into two slices. **This slice is full-mode only**: normal
-draggable/resizable window, always-on-top toggle, save/restore bounds, the
-settings popup. **Not** compact mode, **not** taskbar docking, **not** the
-Win32 FFI (context-menu hook, no-activate topmost) — those are part 2,
-dispatched after this lands.
+**Reprioritized ahead of the widget's compact-mode slice**: an independent
+check (building + running the app, then grepping for functions that
+compile-warn as unused) found that the app's actual core function — polling
+usage and auto-switching accounts when a limit is hit — isn't wired at all
+yet. `UsageMonitor` is never started anywhere, and `handleLimit`/
+`onLimitHit` (cooldown tracking, picking the next account, switching,
+asking approval, handing off CLI sessions) doesn't exist in Rust yet, even
+though the pieces it needs (`switcher.rs`, `windows/approval.rs`,
+`cli_handover.rs` + `windows/cli_restart.rs`) are all already built and
+tested. This task wires them together. Widget compact-mode/Win32 FFI is
+still coming, just after this.
 
-Read `src/main/index.ts`'s widget-related functions in full:
-`widgetDefaultBounds`, `clampWidgetBounds`, `restoreWidgetBounds`,
-`saveWidgetBounds`, `scheduleSaveWidgetBounds`, `openUsageWidgetWindow`
-(the parts relevant to normal/full mode — ignore the `minimized`/compact
-branches for now), `openWidgetSettings`, `closeUsageWidget`,
-`hasEnrolledAccounts`, `isOnboarding`, `syncUsageWidget`,
-`setUsageWidgetEnabled`. Also read `src/renderer/widget.html` and
-`src/renderer/widget-settings.html` (read-only).
+Read `src/main/index.ts` in full again for: `wireMonitors`,
+`restartMonitors`, `manualSwitch`, `askApproval` (already built as
+`windows/approval.rs` — this task just needs to *call* it),
+`onLimitHit`/`handleLimit`, `broadcastChanged`, `listWithUsage`, and the
+`accounts:*`/`providers:list`/`cli:testRestart`/`onboarding:finish`/
+`open:url`/`manager:close` handlers inside `registerIpc`.
 
-Build `windows/widget.rs`:
-- `open_usage_widget(app)`: mirrors `openUsageWidgetWindow` for the
-  non-minimized case only — build a `WebviewWindowBuilder` matching the
-  original's options (frameless, `skip_taskbar`, `always_on_top` per
-  config, resizable/movable, min size, background color from
-  `DEFAULT_WIDGET_BACKGROUND`), positioned via `restoreWidgetBounds`/
-  `widgetDefaultBounds`/`clampWidgetBounds` (port these as pure, testable
-  functions taking a `WorkArea`/display-bounds struct — same style as
-  `app_notify.rs`'s `toast_bounds` and `tray.rs`'s `tray_menu_position`).
-  Skip everything gated on `cfg.usageWidget.minimized` for now (compact
-  bounds, `applyWidgetMinimized`, `positionCompactWidget`, the topmost
-  reassertion timer, `hookWindowMessage`) — leave clear `TODO(widget-part2)`
-  markers.
-- `close_usage_widget(app)`: mirrors `closeUsageWidget` (save bounds, then
-  close) minus the compact-mode context-menu-unhook step.
-- `sync_usage_widget(app)`: mirrors `syncUsageWidget` — show/hide based on
-  `cfg.usageWidget.enabled && hasEnrolledAccounts() && !isOnboarding()`.
-  Wire this into the places that currently have
-  `// TODO(window-layer): sync usage widget` (onboarding's close handler,
-  the tray's `"usage-widget"` menu toggle in `tray.rs`) and into
-  `lib.rs`'s `setup()` after the equivalent of `ensureLiveEnrolled`'s
-  startup logic (check what's already wired vs. still a stub there).
-- Bounds saving: `moved`/`resized` window events -> debounce (400ms, same
-  as `scheduleSaveWidgetBounds`) -> `saveWidgetBounds` -> persist via
-  `config::save_config`. Use `tokio::time` for the debounce timer, or
-  whatever's idiomatic for a Tauri window event handler — your call.
+1. **Wire the monitors.** In `lib.rs`'s `setup()` (after
+   `ensure_live_enrolled`), for each `ProviderId` with enrolled accounts or
+   live auth, construct a `monitor::UsageMonitor`, `start()` it with:
+   - `on_usage`: update `AppState`'s `ProviderState.last_usage` and call
+     `tray::refresh_tray`.
+   - `on_limit_hit`: spawn (`tokio::spawn` or similar) the `handle_limit`
+     flow described below — don't block the monitor's own loop on it.
+   Store the `UsageMonitor` handle in `ProviderState.monitor` so it can be
+   stopped/restarted later (`restartMonitors` — needed when
+   `pollIntervalSec` changes via `config:set`, which `ipc.rs` already has a
+   `TODO` for restarting monitors; check if that TODO already exists and
+   wire it to actually call restart now).
 
-Build `windows/widget_settings.rs`:
-- `open_widget_settings(app)` mirroring `openWidgetSettings` (centered
-  popup, frameless, always-on-top, fixed size).
+2. **Port `handle_limit`** (new function, put it in `app_state.rs` or a new
+   `limit_handler.rs` — your call, but keep it out of `tray.rs`/`ipc.rs`
+   which are already large): prune expired cooldowns, park the current
+   account in `cooling_down` on threshold/error, loop
+   `switcher::pick_next_account` + a live `fetch_usage` check to skip
+   still-exhausted candidates (mirroring the original's verify-before-commit
+   loop), notify if nothing's available (throttled to once per 15 min, same
+   as `lastNoAccountNotify`), otherwise `cli_handover::detect` +
+   `switcher::switch_to` + notify, then (if the provider has desktop
+   integration) `prefs.autoApprove` or call `windows::approval`'s real popup,
+   then restart desktop if approved, then `cli_handover::schedule` in a
+   `finally`-equivalent (make sure this runs even if the desktop-restart
+   step errors, same as the original's `try/finally`).
 
-You'll need a couple more `#[tauri::command]`s for these windows' own
-needs (check `preload.ts` for `widget:close`, `widget-settings:close`,
-`widget:compact-height` — that last one is compact-mode-only, skip it for
-this slice). Don't implement the full `config:set` widget-related side
-effects yet if they'd require part-2 functionality (e.g. anything gated on
-`compactPosition`) — TODO-mark those.
+3. **`ipc.rs` — add the remaining commands**: `providers_list`,
+   `accounts_list` (mirrors `listWithUsage` — cached usage now, kick off a
+   background live-fetch that calls `broadcastChanged`-equivalent if it
+   differs, matching the original's `pendingUsageRefreshes` dedup-by-key
+   set), `accounts_switch` (mirrors `manualSwitch`), `accounts_set_enabled`,
+   `accounts_remove`, `accounts_rename`, `accounts_import_current`,
+   `accounts_add_via_login`, `cli_test_restart`, `onboarding_finish`,
+   `open_url` (use the `open` crate, already a dependency), `manager_close`.
+   Register all of these in `lib.rs`'s `generate_handler!` list.
 
-Test the pure bounds/clamping math the same way as before. `cargo build
---tests` + `cargo test`, commit, push. Flag back if this is bigger than
-expected rather than continuing into part 2 (compact mode/Win32 FFI)
-unscoped.
+4. Anywhere this touches a `TODO(window-layer)` stub left in `tray.rs` or
+   `windows/onboarding.rs` that's now resolvable (e.g. `usage-widget`
+   toggle calling `sync_usage_widget`, if not already wired — check first),
+   resolve it; leave anything still genuinely blocked on widget-part2
+   or `cli.js`/autostart as-is.
 
-## Not started yet (do not start these — future slices, after widget part 1)
+Test the pure parts of `handle_limit` (the cooldown-pruning/pick-next-loop
+logic, using the existing fake-provider-usage test hooks
+`ROTATOR_FAKE_*_PCT` env vars from `monitor.rs`'s tests, or a similar
+seam) the same rigor as before. `cargo build --tests` + `cargo test`,
+then also run `npx tauri build --debug` once and confirm the resulting
+`app.exe` still launches without crashing (a quick background run +
+`tasklist` check is enough, no need for a full manual QA pass — Phase 7
+covers that later). Commit, push.
+
+If this task turns out considerably bigger than expected (it's a real
+chunk — `handle_limit` alone is intricate), it's fine to split it into two
+commits (e.g. monitor-wiring-and-handle_limit first, accounts IPC second)
+rather than one giant one — use your judgment on the natural seam, just
+keep each commit buildable/testable on its own.
+
+## Not started yet (do not start these — future slices, after this one)
 
 - Widget part 2: compact mode, taskbar docking (tray-rect PowerShell
-  query + taskbar theme detection, already described as "port the
-  PowerShell verbatim" in the Win32 FFI notes below), the two genuine
-  Win32 FFI spots (`WM_CONTEXTMENU` hook, no-activate topmost reassertion),
-  the widget's own right-click context menu (`showWidgetContextMenu`).
-- The rest of `ipc.rs` (`accounts:*`, `cli:testRestart`, `onboarding:finish`,
-  `open:url`, `manager:close`, the remaining `config:set` widget side
-  effects).
+  query + taskbar theme detection — port the PowerShell verbatim, see
+  Win32 FFI notes below), the two genuine Win32 FFI spots (`WM_CONTEXTMENU`
+  hook, no-activate topmost reassertion), the widget's own right-click
+  context menu (`showWidgetContextMenu` — this is what would eventually
+  call `open_widget_settings`).
 - `tauri-plugin-autostart` wiring for `launchAtLogin`.
-- Renderer bridge (`window.rotator` shim, one `<script>` tag per HTML file).
+- `cli_hooks::install_hooks` startup wiring — blocked on the `cli.js`
+  resource-path open decision below; bundled into Phase 6 (packaging).
+- Renderer bridge (`window.rotator` shim, one `<script>` tag per HTML file)
+  — needed before the manager/onboarding/widget pages' IPC calls actually
+  do anything, even once the IPC commands above exist.
 - Phase 6 (packaging) and Phase 7 (verification).
 
 ## Win32 FFI notes (what genuinely needs the `windows` crate vs. PowerShell)
@@ -235,10 +269,10 @@ statusline claude`, where `<path>` is the *Electron app's own* installed
 Rust-porting scope, the Tauri app still needs *some* copy of the compiled
 `dist/main/cli.js` (+ its dependency closure) sitting next to the installed
 binary, referenced via Tauri's `app.path().resource_dir()` instead of
-Electron's `__dirname`. Not your task right now (only relevant once you
-wire `cli_hooks.rs` into actual app startup) — flag it back when you get
-there rather than deciding unilaterally; the user should weigh in on
-alternatives (e.g. shipping the CLI as a genuinely separate npm package).
+Electron's `__dirname`. Not your task right now — this is Phase 6
+(packaging) territory, bundled together with the NSIS installer work,
+since it's fundamentally a "what do we ship" packaging decision, not a
+code-porting one.
 
 ## Things to flag back rather than deciding unilaterally
 
