@@ -1,5 +1,6 @@
 mod accounts;
 mod app_notify;
+mod app_state;
 mod atomic_fs;
 mod claude_sessions;
 mod cli_cwd_script;
@@ -13,6 +14,7 @@ mod config;
 mod desktop;
 mod desktop_processes;
 mod i18n;
+mod ipc;
 mod login;
 mod monitor;
 mod paths;
@@ -21,10 +23,12 @@ mod provider;
 mod provider_types;
 mod providers;
 mod switcher;
+mod tray;
 mod tray_pin;
 
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
+use std::sync::Mutex;
+
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -38,24 +42,16 @@ pub fn run() {
                 )?;
             }
 
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&quit])?;
-
-            TrayIconBuilder::new()
-                .icon(tauri::image::Image::from_bytes(include_bytes!(
-                    "../../assets/tray.png"
-                ))?)
-                .menu(&menu)
-                .show_menu_on_left_click(true)
-                .on_menu_event(|app, event| {
-                    if event.id.as_ref() == "quit" {
-                        app.exit(0);
-                    }
-                })
-                .build(app)?;
-
+            let cfg = config::load_config(&config::config_path());
+            app.manage(Mutex::new(app_state::AppState::new(cfg)));
+            tray::setup(app)?;
             Ok(())
         })
+        .invoke_handler(tauri::generate_handler![
+            ipc::config_get,
+            ipc::config_set,
+            ipc::lang_get
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
