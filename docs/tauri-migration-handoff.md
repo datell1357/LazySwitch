@@ -38,13 +38,15 @@ module that claims to port it, to verify nothing has drifted.
 - Run `cargo test` (and where relevant `cargo build --tests`, `npx tauri
   build --debug`) before committing. Don't commit code that doesn't compile.
 - **Do not run `cargo fmt` on the whole crate.** It has pre-existing
-  formatting drift across Phase 1/2 that hasn't been normalized, and
+  formatting drift across earlier phases that hasn't been normalized, and
   reformatting it is out of scope for this migration (noisy diffs, not worth
   the review overhead). If you need to format new files, run rustfmt
   scoped to exactly the new file paths, and double check with `git status`
   afterward that nothing else got touched — `cargo fmt -- path/to/file.rs`
-  in this workspace has been observed to reformat the *entire* crate instead
-  of just that file, so verify before trusting it.
+  in this workspace has repeatedly been observed to reformat the *entire*
+  crate instead of just that file (this has happened three times now), so
+  always verify before trusting it, and if it happens, stop and ask before
+  restoring rather than committing through it.
 - **Environment note**: this machine's `cargo` sometimes can't reach the
   crates.io index (certificate provider issue) and needs `--offline`. If you
   hit this, prefer `--offline` over spending time debugging the network
@@ -54,12 +56,12 @@ module that claims to port it, to verify nothing has drifted.
   commit message.
 - **Git worktree note**: this worktree's `.git` metadata lives in the main
   repo at `D:\Vibe Project\LazySwitch\.git\worktrees\claude_tauri\`, outside
-  this worktree's own directory. If your sandbox can't write there even with
-  an added directory allowance, that's a known environment quirk — flag it
-  rather than working around it by, e.g., committing from a different
-  working directory or altering git config.
+  this worktree's own directory. Any git write (including `git restore`, not
+  just `add`/`commit`) can hit a sandbox permission wall there. That's a
+  known environment quirk, not something to work around yourself — flag it
+  back for a re-invocation with sandbox bypass for that step.
 
-## What's done (Phase 1, 2, 4 — committed, pushed, tested)
+## Done so far (see `git log` for exact commits)
 
 `src-tauri/src/`:
 - `config.rs`, `i18n.rs`, `paths.rs` — ports of `config.ts`/`i18n.ts`/`paths.ts`.
@@ -68,7 +70,7 @@ module that claims to port it, to verify nothing has drifted.
   identifier-based path, so existing users' settings keep working.
 - `accounts.rs` — Codex account store (`accounts.ts`).
 - `provider_types.rs` — data shapes (`providers/types.ts`), plus `ProviderId`
-  enum used for dispatch (see below).
+  enum used for dispatch.
 - `provider.rs` — a match-based dispatcher over `ProviderId` to
   `providers::{codex,claude}`, standing in for the original's object-literal
   `Provider` interface. There are exactly two providers and no plugin model,
@@ -87,131 +89,92 @@ module that claims to port it, to verify nothing has drifted.
 - `switcher.rs`, `monitor.rs` — rotation/exhaustion math and the usage-polling
   loop. `UsageMonitor` runs a tokio background task and takes plain callback
   closures (`on_usage`, `on_limit_hit`) instead of depending on
-  `tauri::AppHandle` directly — wire those callbacks to `app.emit(...)` /
-  tray refresh when you get to the window/tray layer.
+  `tauri::AppHandle` directly.
 - `atomic_fs.rs` — shared atomic-write/atomic-copy helper.
 - `cli_resume_routing.rs`, `codex_rollouts.rs`, `claude_sessions.rs`,
   `cli_cwd_script.rs`, `powershell.rs` (shared PowerShell-exec helper —
   `desktop_processes.rs` has its own older private copy of the same
   pattern; leave that one alone, only new code should use this shared one),
   `cli_sessions.rs`, `cli_hooks.rs` — CLI session detection/restart
-  infrastructure (`cli-resume-routing.ts`, `codex-rollouts.ts`,
-  `claude-sessions.ts`, `cli-cwd-script.ts`, `cli-sessions.ts`,
-  `cli-hooks.ts`). `cli_hooks.rs`'s `install_hooks`/`install_codex_wrapper_hook`
+  infrastructure. `cli_hooks.rs`'s `install_hooks`/`install_codex_wrapper_hook`
   take the standalone CLI's `cli.js` path as a parameter rather than
   hardcoding it — still unresolved, see "Open decision" below.
-- 91 unit tests across these modules, all passing (`cargo test`).
+- `tray_pin.rs`, `app_notify.rs`, `cli_handover.rs` — `app_notify.rs` and
+  `cli_handover.rs` both use a dependency-injection trait
+  (`ToastWindowFactory`, `CliHandoverDeps`) to defer actual Tauri window
+  creation to a later pass — **keep using this pattern** for any remaining
+  window-shaped modules: pure logic + a small trait for "create/show/close
+  a window and tell me what happened", tested against a fake implementation.
+- `app_state.rs`, `ipc.rs` (so far: `config_get`/`config_set`/`lang_get`),
+  `tray.rs` — shared `Mutex<AppState>` via `app.manage()`, the tray icon/menu
+  (checkmark-based language selection — Tauri v2 has no native radio menu
+  item), `TODO(window-layer)` markers where window creation is still needed.
+- `windows/manager.rs`, `windows/onboarding.rs` — the first two of 7 windows.
+  Tray menu items and double-click now open them; startup onboarding-vs-
+  manager routing is wired into `lib.rs`.
+- 111 unit tests across these modules, all passing (`cargo test`) — verified
+  independently, not just via your own report, at each step so far.
 
-## Done — tray_pin.rs, app_notify.rs, cli_handover.rs
+**Known deferred item, not a bug**: tray right-click positioning
+(`tray_menu_position` in `tray.rs` is implemented/tested but never called).
+Investigation found Tauri has no public screen-positioned tray popup API
+without a native owner window; a real window's `popup_menu_at` might work
+once one exists. Revisit once the widget window (always-on, unlike manager/
+onboarding) exists.
 
-Committed as `eb2df8c`. `tray_pin.rs` ported the PowerShell scripts
-verbatim as expected. `app_notify.rs` and `cli_handover.rs` both used a
-dependency-injection trait (`ToastWindowFactory`, `CliHandoverDeps`) to
-defer the actual Tauri window creation to a later pass — good pattern,
-**keep using it** for the remaining window-shaped modules below: define the
-pure logic + a small trait for "create/show/close a window and tell me
-what happened", test the logic against a fake implementation of that trait,
-and leave the real `WebviewWindowBuilder`-backed implementation for the
-final wiring step once all the pieces exist. Minor nit if you touch
-`cli_handover.rs` again: its two `use` statements ended up at the bottom of
-the file after the `#[cfg(test)]` block — harmless but move them to the top
-next time you're in there.
+## Current task — approval.rs, notify.rs, cli_restart.rs (remaining small windows)
 
-## Done — app_state.rs, ipc.rs, tray.rs (first index.ts slice)
+Three more windows, all smaller/simpler than the widget (which still comes
+last). These three specifically complete the dependency-injection seams
+already stubbed in earlier phases:
 
-Committed as `ecf57d6`, 108 tests passing (independently re-verified).
-Good pattern worth continuing: `Mutex<AppState>` via `app.manage()`,
-checkmark-based language menu (no native radio item in Tauri v2 — correct
-call), `TODO(window-layer)` markers exactly where window creation would
-otherwise be needed.
+- **`windows/notify.rs`**: the real `ToastWindowFactory` implementation for
+  `app_notify.rs`, backed by an actual `WebviewWindowBuilder` pointed at
+  `src/renderer/notify.html`. Match the original `createToastWindow`'s
+  options (transparent, frameless, always-on-top, skip-taskbar,
+  `focusable: false`, `show: false` initially) and `positionToasts`'s
+  bounds-setting (`app_notify.rs`'s `toast_bounds` already computes the
+  positions — this file just needs to apply them to real windows and read
+  the real work area from Tauri's monitor API instead of a passed-in
+  `WorkArea` struct).
+- **`windows/approval.rs`**: the "restart Codex Desktop?" popup
+  (`askApproval` in `index.ts`) — this one doesn't have a pre-built
+  trait/seam from an earlier phase, so read `index.ts`'s `askApproval`
+  function directly and port it: a frameless/transparent/always-on-top
+  window loading `approval.html` with query-string params, resolving a
+  promise/future when the user responds or closes it.
+- **`windows/cli_restart.rs`**: the real `CliHandoverDeps` implementation
+  for `cli_handover.rs` — the `askRestart` popup loading `cli-restart.html`,
+  plus wiring `copy_to_clipboard` (check what clipboard crate/API is
+  available — Tauri has a clipboard plugin, or `arboard` directly) and
+  `notify` (should call into the real `notify.rs` toast window plus, per
+  the original's `notify()` helper in `index.ts`, also a native OS
+  notification via `tauri-plugin-notification` — check if that plugin is
+  already a dependency; if not, you'll need to add it).
 
-**One thing to fix in the next slice, not now-done code to redo**: the
-tray's click behavior isn't wired to match the original yet —
-`show_menu_on_left_click(true)` shows the menu on left-click via Tauri's
-built-in mechanism, but the original specifically used *right*-click for
-the context menu (positioned via the custom `trayMenuPosition`/
-`popUpContextMenu`, not the OS default position) and *double*-click to open
-the manager window. `tray_menu_position` is implemented and tested but not
-actually called from anywhere yet. Wire this up properly once the manager
-window exists (next task) — set `show_menu_on_left_click(false)`, handle
-double-click to open the manager, and handle right-click by computing
-`tray_menu_position` (you'll need the tray icon's rect and the primary
-monitor's work area from Tauri's APIs, plus the widget's rect once it
-exists later) and popping the menu at that computed position rather than
-Tauri's default.
+None of these three need new IPC handlers beyond what might be required for
+the popup's own response channel (`approval:respond`, `cli-restart:respond`,
+`app-notify:resize`/`dismiss` in the original — check `preload.ts` for the
+exact channel names/shapes, since the renderer bridge task later will need
+to match these exactly). Add `#[tauri::command]`s for those specifically
+(not the unrelated `accounts:*`/`config:*` ones, those come later).
 
-## Current task — manager.rs + onboarding.rs (first two windows)
-
-The 7-window layer is being built one or two windows at a time, simplest
-first. This slice is exactly: the account manager window and the
-first-run onboarding window. **Not** the widget (most complex — Win32 FFI,
-compact-mode positioning, save/restore bounds — gets its own dedicated
-slice later) and **not** the other 4 windows yet.
-
-Read `src/main/index.ts`'s `openManager`/`openOnboarding` functions and the
-renderer files `src/renderer/manager.html` + `src/renderer/onboarding.html`
-(read-only — do not edit the HTML) to understand what each window needs
-from the backend.
-
-Build `windows/manager.rs` and `windows/onboarding.rs` (new `windows/`
-directory under `src-tauri/src/`, add `mod windows;` with a `pub mod
-manager; pub mod onboarding;` in `windows/mod.rs`):
-
-- Each should have an `open_manager(app: &AppHandle)` / `open_onboarding(app:
-  &AppHandle)` function that: if the window already exists (by label — use
-  Tauri's `app.get_webview_window("manager")` / `"onboarding"`), restore/
-  show/focus it (mirroring `if (managerWin && !managerWin.isDestroyed())`
-  in the original); otherwise build one with `WebviewWindowBuilder`
-  matching the original's `BrowserWindow` options (width/height/resizable/
-  frame:false/title/backgroundColor — check the exact values in
-  `index.ts`), pointing at the existing HTML file (`manager.html` /
-  `onboarding.html` — the frontend is untouched, still plain HTML/JS; don't
-  worry about the `window.rotator` bridge not existing yet, that's a
-  separate later task, the window should still open and load the page even
-  though the page's JS calls will fail silently until the bridge exists).
-  Match the original's "force-show once ready" `ready-to-show` handling.
-- `onboarding`'s close handler needs to call back into syncing the usage
-  widget (`syncUsageWidget()` in the original) — that widget doesn't exist
-  yet, so stub it as `TODO(window-layer): sync usage widget` same as
-  before.
-- Wire `tray.rs`'s `"manage"` and `"tutorial"` menu-item handlers (currently
-  `TODO(window-layer)` stubs) to call `open_manager`/`open_onboarding`.
-- Wire the tray's double-click behavior to open the manager (see the "one
-  thing to fix" note above) — this is the natural point to do that since
-  the manager window now exists.
-- `app.whenReady()`'s onboarding-vs-manager decision at startup (`if
-  (!cfg.onboarded) openOnboarding(); else if (total < 2) openManager();`)
-  should also get wired into `lib.rs`'s `setup()` now.
-
-You do not need to implement the manager's or onboarding's IPC handlers
-yet (`accounts:list`, `accounts:switch`, `onboarding:finish`, etc.) — those
-belong in a later `ipc.rs` expansion pass once more of the window layer
-exists. Getting the windows to *open* correctly (with the tray wiring) is
-this slice's job; the pages will render but most buttons on them won't do
-anything yet, and that's expected at this stage.
-
-Same process as always: test what's testable without a real window (little
-to test here beyond maybe a pure "should we show onboarding or manager at
-startup" decision function — extract that as testable pure logic if you
-can), `cargo build --tests` + `cargo test`, commit, push. Flag back if this
-turns out bigger than expected rather than plowing into windows #3-7
+Test what's testable as pure logic (little new here beyond what's already
+tested — `app_notify.rs`'s math is already covered). Wire into `lib.rs`.
+`cargo build --tests` + `cargo test`, commit, push. Flag back if this turns
+out bigger than expected rather than pushing into the widget window
 unscoped.
 
-## Not started yet (do not start these — future slices, after manager+onboarding)
+## Not started yet (do not start these — future slices, after approval/notify/cli-restart)
 
-- The widget window (compact/full modes, save/restore bounds, taskbar
-  docking via tray-rect PowerShell query, taskbar theme detection, the two
-  genuine Win32 FFI spots — `WM_CONTEXTMENU` hook and no-activate topmost
-  reassertion).
-- widget-settings, approval, notify, cli-restart windows (wiring the
-  `ToastWindowFactory`/`CliHandoverDeps` real implementations to notify/
-  cli-restart specifically).
+- The widget window — last and most complex: compact/full modes, save/
+  restore bounds, taskbar docking via tray-rect PowerShell query, taskbar
+  theme detection, the two genuine Win32 FFI spots (`WM_CONTEXTMENU` hook,
+  no-activate topmost reassertion), widget-settings window.
 - The rest of `ipc.rs` (`accounts:*`, `cli:testRestart`, `onboarding:finish`,
   `open:url`, `manager:close`, `widget:*`, `widget-settings:close`).
 - `tauri-plugin-autostart` wiring for `launchAtLogin`.
-- Renderer bridge (`window.rotator` shim, one `<script>` tag per HTML file)
-  — needed before any of these windows' pages actually do anything, but not
-  before they at least *open*.
+- Renderer bridge (`window.rotator` shim, one `<script>` tag per HTML file).
 - Phase 6 (packaging) and Phase 7 (verification).
 
 ## Win32 FFI notes (what genuinely needs the `windows` crate vs. PowerShell)
@@ -247,9 +210,8 @@ Rust-porting scope, the Tauri app still needs *some* copy of the compiled
 binary, referenced via Tauri's `app.path().resource_dir()` instead of
 Electron's `__dirname`. Not your task right now (only relevant once you
 wire `cli_hooks.rs` into actual app startup) — flag it back when you get
-there rather than deciding unilaterally; the user
-should weigh in on alternatives (e.g. shipping the CLI as a genuinely
-separate npm package).
+there rather than deciding unilaterally; the user should weigh in on
+alternatives (e.g. shipping the CLI as a genuinely separate npm package).
 
 ## Things to flag back rather than deciding unilaterally
 
@@ -269,5 +231,4 @@ separate npm package).
 - Scope creep of any kind (reformatting unrelated files, "while I'm here"
   cleanups, touching already-committed phases beyond what a compile error
   strictly requires) — stop and ask rather than including it in the same
-  commit. This bit us once already (an accidental whole-crate `cargo fmt`
-  during the Phase 4 commit, caught and reverted before it landed).
+  commit.
