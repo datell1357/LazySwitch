@@ -32,13 +32,21 @@ pub enum ThresholdWindow {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LimitReason {
-    Threshold { window: ThresholdWindow, percent: f64 },
-    Error { message: String },
+    Threshold {
+        window: ThresholdWindow,
+        percent: f64,
+    },
+    Error {
+        message: String,
+    },
 }
 
 fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
 }
 
 /// Test hooks: ROTATOR_FAKE_CODEX_PCT / ROTATOR_FAKE_CLAUDE_PCT force the
@@ -88,7 +96,10 @@ async fn evaluate(
     if let Some(fake) = fake_pct(id) {
         snapshot.primary = Some(PWindow {
             used_percent: fake,
-            window_minutes: snapshot.primary.and_then(|p| p.window_minutes).or(Some(300)),
+            window_minutes: snapshot
+                .primary
+                .and_then(|p| p.window_minutes)
+                .or(Some(300)),
             resets_at: snapshot
                 .primary
                 .and_then(|p| p.resets_at)
@@ -101,7 +112,12 @@ async fn evaluate(
     match &error {
         Some(err) if last_error.as_deref() != Some(err.as_str()) => {
             *last_error = Some(err.clone());
-            return (snapshot, Some(LimitReason::Error { message: err.clone() }));
+            return (
+                snapshot,
+                Some(LimitReason::Error {
+                    message: err.clone(),
+                }),
+            );
         }
         None => *last_error = None,
         _ => {}
@@ -113,7 +129,10 @@ async fn evaluate(
             let percent = p.used_percent;
             return (
                 snapshot,
-                Some(LimitReason::Threshold { window: ThresholdWindow::Primary, percent }),
+                Some(LimitReason::Threshold {
+                    window: ThresholdWindow::Primary,
+                    percent,
+                }),
             );
         }
     }
@@ -122,7 +141,10 @@ async fn evaluate(
             let percent = s.used_percent;
             return (
                 snapshot,
-                Some(LimitReason::Threshold { window: ThresholdWindow::Secondary, percent }),
+                Some(LimitReason::Threshold {
+                    window: ThresholdWindow::Secondary,
+                    percent,
+                }),
             );
         }
     }
@@ -222,12 +244,12 @@ mod tests {
         }
     }
 
-    // All four tests below touch the process-global ROTATOR_FAKE_CODEX_PCT /
+    // All cases below touch the process-global ROTATOR_FAKE_CODEX_PCT /
     // ROTATOR_FAKE_PRIMARY_PCT env vars, which would race under the test
     // harness's default parallel execution if split into independent
-    // #[test] fns — kept as two combined tests (sync / async) to stay serial.
-    #[test]
-    fn fake_pct_env_var_behavior() {
+    // #[test] fns — kept as one test to stay serial.
+    #[tokio::test]
+    async fn fake_pct_env_var_and_threshold_behavior() {
         std::env::remove_var("ROTATOR_FAKE_CODEX_PCT");
         std::env::remove_var("ROTATOR_FAKE_PRIMARY_PCT");
 
@@ -239,26 +261,26 @@ mod tests {
         assert_eq!(fake_pct(ProviderId::Codex), Some(55.0));
         assert_eq!(fake_pct(ProviderId::Claude), None);
         std::env::remove_var("ROTATOR_FAKE_PRIMARY_PCT");
-    }
 
-    #[tokio::test]
-    async fn evaluate_fake_pct_threshold_behavior() {
         // Uses the fake-pct test hook so this doesn't depend on any live
         // account/network state on the machine running the tests.
-        std::env::remove_var("ROTATOR_FAKE_CODEX_PCT");
-
         std::env::set_var("ROTATOR_FAKE_CODEX_PCT", "97");
         let mut last_error = None;
-        let (snapshot, limit) = evaluate(ProviderId::Codex, &prefs(5.0, 1.0), &mut last_error).await;
+        let (snapshot, limit) =
+            evaluate(ProviderId::Codex, &prefs(5.0, 1.0), &mut last_error).await;
         assert_eq!(snapshot.primary.unwrap().used_percent, 97.0);
         assert_eq!(
             limit,
-            Some(LimitReason::Threshold { window: ThresholdWindow::Primary, percent: 97.0 })
+            Some(LimitReason::Threshold {
+                window: ThresholdWindow::Primary,
+                percent: 97.0
+            })
         );
 
         std::env::set_var("ROTATOR_FAKE_CODEX_PCT", "10");
         let mut last_error = None;
-        let (_snapshot, limit) = evaluate(ProviderId::Codex, &prefs(5.0, 1.0), &mut last_error).await;
+        let (_snapshot, limit) =
+            evaluate(ProviderId::Codex, &prefs(5.0, 1.0), &mut last_error).await;
         assert_eq!(limit, None);
 
         std::env::remove_var("ROTATOR_FAKE_CODEX_PCT");

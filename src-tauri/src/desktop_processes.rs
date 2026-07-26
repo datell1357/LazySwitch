@@ -125,8 +125,14 @@ fn read_snapshot(value: &Value) -> DesktopProcessSnapshot {
         None => return DesktopProcessSnapshot::default(),
     };
     DesktopProcessSnapshot {
-        targets: obj.get("targets").map(read_process_rows).unwrap_or_default(),
-        parents: obj.get("parents").map(read_process_rows).unwrap_or_default(),
+        targets: obj
+            .get("targets")
+            .map(read_process_rows)
+            .unwrap_or_default(),
+        parents: obj
+            .get("parents")
+            .map(read_process_rows)
+            .unwrap_or_default(),
     }
 }
 
@@ -183,7 +189,7 @@ ConvertTo-Json -InputObject ([pscustomobject]@{{
 /// strip a trailing separator, and fold case. Does not resolve `.`/`..`
 /// segments — the inputs here are always absolute WMI/config paths, never
 /// relative ones, so that part of `normalize` never mattered in practice.
-fn normalize_windows_path(value: &str) -> String {
+pub(crate) fn normalize_windows_path(value: &str) -> String {
     let unified = value.replace('/', "\\");
     let mut collapsed = String::with_capacity(unified.len());
     let mut last_was_sep = false;
@@ -205,7 +211,8 @@ fn normalize_windows_path(value: &str) -> String {
 }
 
 fn is_known_cli_executable_path(normalized_path: &str) -> bool {
-    normalized_path.contains("\\appdata\\local\\openai\\codex\\") || normalized_path.contains("\\.codex\\")
+    normalized_path.contains("\\appdata\\local\\openai\\codex\\")
+        || normalized_path.contains("\\.codex\\")
 }
 
 fn is_desktop_executable_path(normalized_path: &str, desktop_app_path: Option<&str>) -> bool {
@@ -260,7 +267,10 @@ fn has_terminal_ancestor(pid: i64, rows: &HashMap<i64, &DesktopProcessRow>) -> b
         }
         if let Some(parent) = rows.get(&parent_pid) {
             if let Some(name) = &parent.name {
-                if TERMINAL_PROCESS_NAMES.iter().any(|t| *t == name.to_lowercase()) {
+                if TERMINAL_PROCESS_NAMES
+                    .iter()
+                    .any(|t| *t == name.to_lowercase())
+                {
                     return true;
                 }
             }
@@ -303,13 +313,24 @@ pub fn select_desktop_process_ids(
 }
 
 async fn taskkill_pid(pid: i64) {
-    let _ = exec_file_text("taskkill.exe", &["/PID", &pid.to_string(), "/T", "/F"], 5_000).await;
+    let _ = exec_file_text(
+        "taskkill.exe",
+        &["/PID", &pid.to_string(), "/T", "/F"],
+        5_000,
+    )
+    .await;
 }
 
-pub async fn kill_windows_desktop_processes(process_names: &[String], desktop_app_path: Option<&str>) {
+pub async fn kill_windows_desktop_processes(
+    process_names: &[String],
+    desktop_app_path: Option<&str>,
+) {
     let snapshot = enumerate_desktop_processes(process_names).await;
     let pids = select_desktop_process_ids(&snapshot, desktop_app_path, std::process::id() as i64);
-    let handles: Vec<_> = pids.into_iter().map(|pid| tokio::spawn(taskkill_pid(pid))).collect();
+    let handles: Vec<_> = pids
+        .into_iter()
+        .map(|pid| tokio::spawn(taskkill_pid(pid)))
+        .collect();
     for h in handles {
         let _ = h.await;
     }
@@ -390,7 +411,10 @@ mod tests {
         let configured = r"C:\Users\me\AppData\Local\Programs\Codex\Codex.exe";
         let normalized = normalize_windows_path(configured);
         assert!(is_desktop_executable_path(&normalized, Some(configured)));
-        assert!(!is_desktop_executable_path(&normalized, Some(r"C:\other\path.exe")));
+        assert!(!is_desktop_executable_path(
+            &normalized,
+            Some(r"C:\other\path.exe")
+        ));
     }
 
     #[test]
@@ -423,7 +447,12 @@ mod tests {
     #[test]
     fn select_skips_processes_in_own_tree() {
         let snapshot = DesktopProcessSnapshot {
-            targets: vec![row(200, 100, Some("Codex.exe"), Some(r"C:\Codex\Codex.exe"))],
+            targets: vec![row(
+                200,
+                100,
+                Some("Codex.exe"),
+                Some(r"C:\Codex\Codex.exe"),
+            )],
             parents: vec![row(100, 1, Some("app.exe"), None)],
         };
         // root_pid 100 is the ancestor of target 200 -> must be skipped.
@@ -506,7 +535,9 @@ mod tests {
     #[test]
     fn encode_powershell_round_trips_utf16le_base64() {
         let encoded = encode_powershell("Write-Output 'hi'");
-        let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
         let units: Vec<u16> = bytes
             .chunks_exact(2)
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
