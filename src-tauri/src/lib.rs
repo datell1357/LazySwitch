@@ -1,3 +1,7 @@
+mod config;
+mod i18n;
+mod paths;
+
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 
