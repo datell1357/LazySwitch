@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
-use tauri::{App, AppHandle, Manager, PhysicalPosition, PhysicalRect, Runtime};
+use tauri::{App, AppHandle, Manager, PhysicalPosition, PhysicalRect, Runtime, Wry};
 
 use crate::app_state::AppState;
 use crate::config;
@@ -203,7 +203,7 @@ fn save_state(state: &AppState) -> Result<(), String> {
     config::save_config(&config::config_path(), &state.cfg).map_err(|error| error.to_string())
 }
 
-fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
+fn handle_menu_event(app: &AppHandle<Wry>, id: &str) {
     if id == "quit" {
         app.exit(0);
         return;

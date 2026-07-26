@@ -1,7 +1,7 @@
 use tauri::window::Color;
 use tauri::{
     webview::PageLoadEvent, AppHandle, Manager, Runtime, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder, WindowEvent,
+    WebviewWindowBuilder, WindowEvent, Wry,
 };
 
 use crate::windows::widget;
@@ -16,7 +16,7 @@ fn restore_show_focus<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()
     window.set_focus()
 }
 
-pub fn open_onboarding<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
+pub fn open_onboarding(app: &AppHandle<Wry>) -> tauri::Result<WebviewWindow<Wry>> {
     if let Some(window) = app.get_webview_window(LABEL) {
         restore_show_focus(&window)?;
         return Ok(window);

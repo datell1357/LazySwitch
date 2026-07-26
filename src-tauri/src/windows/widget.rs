@@ -1,39 +1,39 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tauri::menu::MenuBuilder;
 use tauri::window::Color;
 use tauri::{
-    AppHandle, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
+    AppHandle, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder, WindowEvent, Wry,
 };
 
 use crate::app_state::AppState;
-use crate::config;
+use crate::config::{self, CompactPosition};
+use crate::i18n::{resolve_lang, t};
 use crate::provider;
 use crate::provider_types::ProviderId;
+use crate::windows::widget_geometry::{
+    clamp_widget_bounds, compact_bottom_right_bounds, DisplayArea, WidgetBounds,
+};
+use crate::windows::widget_native;
+use crate::windows::widget_taskbar;
 
 const LABEL: &str = "usage-widget";
 const ONBOARDING_LABEL: &str = "onboarding";
 const DEFAULT_WIDGET_BACKGROUND: Color = Color(0x16, 0x17, 0x1b, 0xff);
 const WIDGET_MIN_WIDTH: f64 = 300.0;
 const WIDGET_MIN_HEIGHT: f64 = 260.0;
+const WIDGET_COMPACT_WIDTH: f64 = 280.0;
+const WIDGET_COMPACT_DEFAULT_HEIGHT: f64 = 70.0;
+const WIDGET_COMPACT_MIN_HEIGHT: f64 = 38.0;
 const BOUNDS_SAVE_DELAY: Duration = Duration::from_millis(400);
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DisplayArea {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct WidgetBounds {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-}
+const TOPMOST_REASSERT_DELAY: Duration = Duration::from_millis(100);
+const CONTEXT_SETTINGS_ID: &str = "widget-context-settings";
+const CONTEXT_RESTORE_ID: &str = "widget-context-restore";
+const CONTEXT_CLOSE_ID: &str = "widget-context-close";
+static WIDGET_IS_TRANSPARENT: AtomicBool = AtomicBool::new(false);
 
 pub fn widget_default_bounds(saved: WidgetBounds, work_area: DisplayArea) -> WidgetBounds {
     WidgetBounds {
@@ -52,20 +52,7 @@ pub fn widget_default_bounds(saved: WidgetBounds, work_area: DisplayArea) -> Wid
     }
 }
 
-pub fn clamp_widget_bounds(bounds: WidgetBounds, display: DisplayArea) -> WidgetBounds {
-    let width = bounds.width.min(display.width);
-    let height = bounds.height.min(display.height);
-    WidgetBounds {
-        x: bounds.x.clamp(display.x, display.x + display.width - width),
-        y: bounds
-            .y
-            .clamp(display.y, display.y + display.height - height),
-        width,
-        height,
-    }
-}
-
-fn restore_widget_bounds<R: Runtime>(app: &AppHandle<R>) -> Result<WidgetBounds, String> {
+fn restore_widget_bounds(app: &AppHandle<Wry>) -> Result<WidgetBounds, String> {
     let monitor = app
         .primary_monitor()
         .map_err(|error| error.to_string())?
@@ -101,7 +88,7 @@ fn restore_widget_bounds<R: Runtime>(app: &AppHandle<R>) -> Result<WidgetBounds,
     ))
 }
 
-fn save_widget_bounds<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+fn save_widget_bounds(app: &AppHandle<Wry>) -> Result<(), String> {
     let Some(window) = app.get_webview_window(LABEL) else {
         return Ok(());
     };
@@ -116,7 +103,9 @@ fn save_widget_bounds<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         .to_logical::<f64>(scale_factor);
     let state = app.state::<Mutex<AppState>>();
     let mut state = state.lock().map_err(|error| error.to_string())?;
-    // TODO(widget-part2): skip saving while the widget is in compact mode.
+    if state.cfg.usage_widget.minimized {
+        return Ok(());
+    }
     state.cfg.usage_widget.x = Some(position.x);
     state.cfg.usage_widget.y = Some(position.y);
     state.cfg.usage_widget.width = size.width;
@@ -124,7 +113,7 @@ fn save_widget_bounds<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     config::save_config(&config::config_path(), &state.cfg).map_err(|error| error.to_string())
 }
 
-fn schedule_save_widget_bounds<R: Runtime>(app: AppHandle<R>, save_generation: Arc<AtomicU64>) {
+fn schedule_save_widget_bounds(app: AppHandle<Wry>, save_generation: Arc<AtomicU64>) {
     let generation = save_generation.fetch_add(1, Ordering::Relaxed) + 1;
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(BOUNDS_SAVE_DELAY).await;
@@ -134,53 +123,265 @@ fn schedule_save_widget_bounds<R: Runtime>(app: AppHandle<R>, save_generation: A
     });
 }
 
-pub fn open_usage_widget<R: Runtime>(app: &AppHandle<R>) -> Result<WebviewWindow<R>, String> {
+pub fn open_usage_widget(app: &AppHandle<Wry>) -> Result<WebviewWindow<Wry>, String> {
     if let Some(window) = app.get_webview_window(LABEL) {
+        if WIDGET_IS_TRANSPARENT.load(Ordering::Acquire)
+            != widget_taskbar::is_taskbar_compact_widget(app)
+        {
+            recreate_usage_widget(app, WIDGET_COMPACT_DEFAULT_HEIGHT)?;
+            return app
+                .get_webview_window(LABEL)
+                .ok_or_else(|| "usage widget recreation failed".to_string());
+        }
         window.show().map_err(|error| error.to_string())?;
+        widget_taskbar::apply_taskbar_theme(app, window.clone());
         return Ok(window);
     }
 
-    let bounds = restore_widget_bounds(app)?;
-    let always_on_top = app
+    let cfg = app
         .state::<Mutex<AppState>>()
         .lock()
         .map_err(|error| error.to_string())?
         .cfg
         .usage_widget
-        .always_on_top;
+        .clone();
+    let transparent = cfg.minimized && cfg.compact_position == CompactPosition::Taskbar;
+    let bounds = if cfg.minimized {
+        let (display, work_area, _) = widget_taskbar::display_areas(app)?;
+        compact_bottom_right_bounds(
+            WIDGET_COMPACT_DEFAULT_HEIGHT,
+            WIDGET_COMPACT_WIDTH,
+            work_area,
+            display,
+        )
+    } else {
+        restore_widget_bounds(app)?
+    };
     let window = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("widget.html".into()))
         .position(bounds.x, bounds.y)
         .inner_size(bounds.width, bounds.height)
-        .min_inner_size(WIDGET_MIN_WIDTH, WIDGET_MIN_HEIGHT)
-        .resizable(true)
+        .min_inner_size(
+            if cfg.minimized {
+                WIDGET_COMPACT_WIDTH
+            } else {
+                WIDGET_MIN_WIDTH
+            },
+            if cfg.minimized {
+                WIDGET_COMPACT_MIN_HEIGHT
+            } else {
+                WIDGET_MIN_HEIGHT
+            },
+        )
+        .resizable(!cfg.minimized)
         .decorations(false)
-        .always_on_top(always_on_top)
+        .always_on_top(cfg.always_on_top)
         .skip_taskbar(true)
         .minimizable(false)
         .maximizable(false)
         .fullscreen(false)
         .title("LazySwitch Usage")
-        .background_color(DEFAULT_WIDGET_BACKGROUND)
+        .transparent(transparent)
+        .background_color(if transparent {
+            Color(0, 0, 0, 0)
+        } else {
+            DEFAULT_WIDGET_BACKGROUND
+        })
         .build()
         .map_err(|error| error.to_string())?;
+    WIDGET_IS_TRANSPARENT.store(transparent, Ordering::Release);
 
-    // TODO(widget-part2): compact construction, taskbar docking, context-menu
-    // hook, transparency, and no-activate topmost reassertion belong to part 2.
+    if cfg.minimized {
+        if let Err(error) = widget_native::install_context_menu_hook(app, &window) {
+            let _ = window.destroy();
+            return Err(error);
+        }
+    }
     let save_generation = Arc::new(AtomicU64::new(0));
     let event_app = app.clone();
+    let event_window = window.clone();
     window.on_window_event(move |event| {
         if matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_)) {
             schedule_save_widget_bounds(event_app.clone(), Arc::clone(&save_generation));
         }
+        if matches!(event, WindowEvent::ThemeChanged(_)) {
+            widget_taskbar::apply_taskbar_theme(&event_app, event_window.clone());
+        }
+        if matches!(
+            event,
+            WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
+        ) {
+            let _ = widget_native::remove_context_menu_hook(&event_window);
+        }
     });
+    let menu_app = app.clone();
+    window.on_menu_event(move |_window, event| {
+        let _ = handle_widget_context_menu(&menu_app, event.id().as_ref());
+    });
+    let timer_app = app.clone();
+    let timer_window = window.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(TOPMOST_REASSERT_DELAY).await;
+            let Some(current) = timer_app.get_webview_window(LABEL) else {
+                break;
+            };
+            let should_reassert = timer_app
+                .state::<Mutex<AppState>>()
+                .lock()
+                .map(|state| {
+                    state.cfg.usage_widget.always_on_top
+                        && state.cfg.usage_widget.minimized
+                        && state.cfg.usage_widget.compact_position == CompactPosition::Taskbar
+                })
+                .unwrap_or(false);
+            let (Ok(current_hwnd), Ok(timer_hwnd)) = (current.hwnd(), timer_window.hwnd()) else {
+                break;
+            };
+            if current_hwnd != timer_hwnd {
+                break;
+            }
+            if should_reassert && !widget_native::context_menu_open() {
+                let _ = widget_native::reassert_topmost(&timer_window);
+            }
+        }
+    });
+    if cfg.minimized {
+        let position_app = app.clone();
+        let position_window = window.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = widget_taskbar::position_compact_widget(
+                position_app,
+                position_window,
+                WIDGET_COMPACT_DEFAULT_HEIGHT,
+            )
+            .await;
+        });
+    }
+    widget_taskbar::apply_taskbar_theme(app, window.clone());
     Ok(window)
 }
 
-pub fn close_usage_widget<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+fn recreate_usage_widget(app: &AppHandle<Wry>, compact_height: f64) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(LABEL) {
+        widget_native::remove_context_menu_hook(&window).ok();
+        window.destroy().map_err(|error| error.to_string())?;
+    }
+    let window = open_usage_widget(app)?;
+    if widget_taskbar::is_taskbar_compact_widget(app) {
+        let position_app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ =
+                widget_taskbar::position_compact_widget(position_app, window, compact_height).await;
+        });
+    }
+    Ok(())
+}
+
+pub fn apply_widget_minimized(
+    app: &AppHandle<Wry>,
+    minimized: bool,
+    compact_height: f64,
+) -> Result<(), String> {
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return Ok(());
+    };
+    if WIDGET_IS_TRANSPARENT.load(Ordering::Acquire)
+        != widget_taskbar::is_taskbar_compact_widget(app)
+    {
+        return recreate_usage_widget(app, compact_height);
+    }
+    if minimized {
+        widget_native::install_context_menu_hook(app, &window)?;
+        window
+            .set_min_size(Some(LogicalSize::new(
+                WIDGET_COMPACT_WIDTH,
+                WIDGET_COMPACT_MIN_HEIGHT,
+            )))
+            .map_err(|error| error.to_string())?;
+        window
+            .set_resizable(false)
+            .map_err(|error| error.to_string())?;
+        widget_taskbar::apply_taskbar_theme(app, window.clone());
+        let position_app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ =
+                widget_taskbar::position_compact_widget(position_app, window, compact_height).await;
+        });
+    } else {
+        widget_taskbar::send_taskbar_theme(&window, None);
+        widget_native::remove_context_menu_hook(&window).ok();
+        window
+            .set_min_size(Some(LogicalSize::new(WIDGET_MIN_WIDTH, WIDGET_MIN_HEIGHT)))
+            .map_err(|error| error.to_string())?;
+        window
+            .set_resizable(true)
+            .map_err(|error| error.to_string())?;
+        let bounds = restore_widget_bounds(app)?;
+        window
+            .set_size(LogicalSize::new(bounds.width, bounds.height))
+            .map_err(|error| error.to_string())?;
+        window
+            .set_position(LogicalPosition::new(bounds.x, bounds.y))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+pub(crate) fn show_widget_context_menu(app: &AppHandle<Wry>) -> Result<(), String> {
+    let minimized = app
+        .state::<Mutex<AppState>>()
+        .lock()
+        .map_err(|error| error.to_string())?
+        .cfg
+        .usage_widget
+        .minimized;
+    let Some(window) = app.get_webview_window(LABEL).filter(|_| minimized) else {
+        return Ok(());
+    };
+    let lang = app
+        .state::<Mutex<AppState>>()
+        .lock()
+        .map_err(|error| error.to_string())
+        .map(|state| resolve_lang(&state.cfg.language))?;
+    let menu = MenuBuilder::new(app)
+        .text(CONTEXT_SETTINGS_ID, t(lang, "widget.settings", &[]))
+        .text(CONTEXT_RESTORE_ID, t(lang, "widget.maximize", &[]))
+        .text(CONTEXT_CLOSE_ID, t(lang, "widget.close", &[]))
+        .build()
+        .map_err(|error| error.to_string())?;
+    window.popup_menu(&menu).map_err(|error| error.to_string())
+}
+
+fn handle_widget_context_menu(app: &AppHandle<Wry>, id: &str) -> Result<(), String> {
+    match id {
+        CONTEXT_SETTINGS_ID => {
+            crate::windows::widget_settings::open_widget_settings(app)
+                .map_err(|error| error.to_string())?;
+        }
+        CONTEXT_RESTORE_ID => {
+            {
+                let state = app.state::<Mutex<AppState>>();
+                let mut state = state.lock().map_err(|error| error.to_string())?;
+                state.cfg.usage_widget.minimized = false;
+                config::save_config(&config::config_path(), &state.cfg)
+                    .map_err(|error| error.to_string())?;
+            }
+            apply_widget_minimized(app, false, WIDGET_COMPACT_DEFAULT_HEIGHT)?;
+            crate::limit_handler::broadcast_changed(app);
+            crate::tray::refresh_tray(app)?;
+        }
+        CONTEXT_CLOSE_ID => set_usage_widget_enabled(app, false)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+pub fn close_usage_widget(app: &AppHandle<Wry>) -> Result<(), String> {
     let Some(window) = app.get_webview_window(LABEL) else {
         return Ok(());
     };
     save_widget_bounds(app)?;
+    widget_native::remove_context_menu_hook(&window).ok();
     window.close().map_err(|error| error.to_string())
 }
 
@@ -190,11 +391,11 @@ pub fn has_enrolled_accounts() -> bool {
         .any(|provider_id| !provider::list_accounts(provider_id).is_empty())
 }
 
-pub fn is_onboarding<R: Runtime>(app: &AppHandle<R>) -> bool {
+pub fn is_onboarding(app: &AppHandle<Wry>) -> bool {
     app.get_webview_window(ONBOARDING_LABEL).is_some()
 }
 
-pub fn sync_usage_widget<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+pub fn sync_usage_widget(app: &AppHandle<Wry>) -> Result<(), String> {
     let enabled = app
         .state::<Mutex<AppState>>()
         .lock()
@@ -210,10 +411,7 @@ pub fn sync_usage_widget<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     Ok(())
 }
 
-pub fn set_usage_widget_enabled<R: Runtime>(
-    app: &AppHandle<R>,
-    enabled: bool,
-) -> Result<(), String> {
+pub fn set_usage_widget_enabled(app: &AppHandle<Wry>, enabled: bool) -> Result<(), String> {
     {
         let state = app.state::<Mutex<AppState>>();
         let mut state = state.lock().map_err(|error| error.to_string())?;
@@ -228,6 +426,31 @@ pub fn set_usage_widget_enabled<R: Runtime>(
 #[tauri::command]
 pub fn widget_close(app: AppHandle) -> Result<(), String> {
     set_usage_widget_enabled(&app, false)
+}
+
+#[tauri::command]
+pub fn widget_compact_height(
+    app: AppHandle,
+    window: WebviewWindow,
+    height: f64,
+) -> Result<(), String> {
+    if window.label() != LABEL || !height.is_finite() {
+        return Ok(());
+    }
+    let minimized = app
+        .state::<Mutex<AppState>>()
+        .lock()
+        .map_err(|error| error.to_string())?
+        .cfg
+        .usage_widget
+        .minimized;
+    if minimized {
+        let next_height = height.round().max(WIDGET_COMPACT_MIN_HEIGHT);
+        tauri::async_runtime::spawn(async move {
+            let _ = widget_taskbar::position_compact_widget(app, window, next_height).await;
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]

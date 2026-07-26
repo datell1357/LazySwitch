@@ -4,7 +4,10 @@ pub mod manager;
 pub mod notify;
 pub mod onboarding;
 pub mod widget;
+mod widget_geometry;
+mod widget_native;
 pub mod widget_settings;
+mod widget_taskbar;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartupWindow {

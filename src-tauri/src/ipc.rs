@@ -82,10 +82,25 @@ pub fn config_set(
 ) -> Result<AppConfig, String> {
     let mut state = state.lock().map_err(|error| error.to_string())?;
     let previous = state.cfg.clone();
-    let next = merge_config(&previous, &patch)?;
+    let mut next = merge_config(&previous, &patch)?;
 
-    // TODO(widget-part2): capture bounds before minimizing and synchronize
-    // compact positioning when minimized/compactPosition changes.
+    if next.usage_widget.minimized && !previous.usage_widget.minimized {
+        if let Some(window) = app.get_webview_window("usage-widget") {
+            let scale = window.scale_factor().map_err(|error| error.to_string())?;
+            let position = window
+                .outer_position()
+                .map_err(|error| error.to_string())?
+                .to_logical::<f64>(scale);
+            let size = window
+                .inner_size()
+                .map_err(|error| error.to_string())?
+                .to_logical::<f64>(scale);
+            next.usage_widget.x = Some(position.x);
+            next.usage_widget.y = Some(position.y);
+            next.usage_widget.width = size.width;
+            next.usage_widget.height = size.height;
+        }
+    }
     let restart_monitors = previous.codex.poll_interval_sec != next.codex.poll_interval_sec
         || previous.claude.poll_interval_sec != next.claude.poll_interval_sec;
     // TODO(window-layer): apply launch-at-login via tauri-plugin-autostart.
@@ -105,6 +120,20 @@ pub fn config_set(
     if previous.usage_widget.enabled != next.usage_widget.enabled {
         crate::windows::widget::sync_usage_widget(&app)?;
         crate::tray::refresh_tray(&app)?;
+    }
+    if previous.usage_widget.minimized != next.usage_widget.minimized {
+        crate::windows::widget::apply_widget_minimized(&app, next.usage_widget.minimized, 70.0)?;
+    } else if previous.usage_widget.compact_position != next.usage_widget.compact_position
+        && next.usage_widget.minimized
+    {
+        let compact_height = app
+            .get_webview_window("usage-widget")
+            .and_then(|window| {
+                let scale = window.scale_factor().ok()?;
+                Some(f64::from(window.inner_size().ok()?.height) / scale)
+            })
+            .unwrap_or(70.0);
+        crate::windows::widget::apply_widget_minimized(&app, true, compact_height)?;
     }
     if restart_monitors {
         crate::limit_handler::restart_monitors(&app)?;

@@ -65,6 +65,25 @@ pub fn run() {
                 app.handle().clone(),
             )));
             tray::setup(app)?;
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                let powershell = std::env::var("SystemRoot")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|_| std::path::PathBuf::from(r"C:\Windows"))
+                    .join("System32")
+                    .join("WindowsPowerShell")
+                    .join("v1.0")
+                    .join("powershell.exe");
+                let executable = std::env::current_exe().unwrap_or_default();
+                let os_release = powershell::run(
+                    &powershell.to_string_lossy(),
+                    "[Console]::WriteLine([Environment]::OSVersion.Version.ToString())",
+                    2_000,
+                )
+                .await
+                .unwrap_or_default();
+                tray_pin::promote_tray_icon(&powershell, os_release.trim(), &executable).await;
+            });
             ensure_live_enrolled();
             tauri::async_runtime::block_on(async { limit_handler::wire_monitors(app.handle()) })
                 .map_err(std::io::Error::other)?;
@@ -113,6 +132,7 @@ pub fn run() {
             windows::notify::app_notify_resize,
             windows::notify::app_notify_dismiss,
             windows::widget::widget_close,
+            windows::widget::widget_compact_height,
             windows::widget_settings::widget_settings_close
         ])
         .run(tauri::generate_context!())
