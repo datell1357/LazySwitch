@@ -102,50 +102,90 @@ module that claims to port it, to verify nothing has drifted.
   hardcoding it — still unresolved, see "Open decision" below.
 - 91 unit tests across these modules, all passing (`cargo test`).
 
-## What's not started at all
+## Done — tray_pin.rs, app_notify.rs, cli_handover.rs
 
-In rough dependency order — **your current task is just #1-#3**, don't
-start #4 yet (it's large enough to deserve its own dedicated handoff update
-once you get here; flag back when #1-#3 are done rather than continuing
-into it unscoped):
+Committed as `eb2df8c`. `tray_pin.rs` ported the PowerShell scripts
+verbatim as expected. `app_notify.rs` and `cli_handover.rs` both used a
+dependency-injection trait (`ToastWindowFactory`, `CliHandoverDeps`) to
+defer the actual Tauri window creation to a later pass — good pattern,
+**keep using it** for the remaining window-shaped modules below: define the
+pure logic + a small trait for "create/show/close a window and tell me
+what happened", test the logic against a fake implementation of that trait,
+and leave the real `WebviewWindowBuilder`-backed implementation for the
+final wiring step once all the pieces exist. Minor nit if you touch
+`cli_handover.rs` again: its two `use` statements ended up at the bottom of
+the file after the `#[cfg(test)]` block — harmless but move them to the top
+next time you're in there.
 
-1. **`tray_pin.rs`** — port of `tray-pin.ts` (best-effort "always show tray
-   icon", Win11 registry promotion + Win10 binary-blob edit). Same pattern
-   as `desktop_processes.rs`: keep the original PowerShell scripts verbatim,
-   just change the calling harness to Rust/`powershell.rs` (the new shared
-   one, since this is new code).
+## Current task — app_state.rs + tray.rs (first slice of the index.ts port)
 
-2. **`app_notify.rs`** — port of `app-notify.ts`'s *pure logic only*: the
-   toast queue (`queue`/`payloads`/`activeToasts` bookkeeping), the stacking
-   position math (`positionToasts`), height clamping (`clampHeight`), and
-   the draining logic (`drainQueue`). Do **not** create the actual Tauri
-   window yet — stub the "create and show a toast window" step behind a
-   function signature/trait that the not-yet-written window-management
-   module (task #4) will implement later; the queue/math logic is what's
-   worth porting and testing now, the `BrowserWindow`-equivalent
-   construction belongs with the rest of the window layer.
+The full `index.ts` port (tray + 7 windows + every IPC handler + widget
+Win32 positioning) is too large for one dispatch. This is the **first
+slice only** — state management and the tray icon/menu, with **no window
+creation yet**. Don't go beyond this scope; flag back when it's done rather
+than continuing into the window layer unscoped.
 
-3. **`cli_handover.rs`** — port of `cli-handover.ts`'s orchestration logic:
-   `providerName`, `notifyCliRestart`, and the `handle`/`schedule`/`detect`
-   flow that decides whether to auto-restart CLI sessions or ask the user
-   first, calling into `cli_sessions::detect_cli_sessions` /
-   `restart_cli_sessions` (already ported). Same deal as `app_notify.rs`:
-   the `askRestart` popup window creation is out of scope here, stub it
-   behind a function signature the window layer will implement.
+Build `app_state.rs`:
+- A struct mirroring `index.ts`'s module-level mutable state: `cfg:
+  AppConfig` (already loaded/saved via `config.rs`), and a per-provider
+  `PState` equivalent — `monitor: Option<UsageMonitor>`, `last_usage:
+  Option<UsageSnapshot>`, `cooling_down: HashMap<String, i64>` (name ->
+  epoch ms), `switching: bool`, `handling_limit: bool`,
+  `last_no_account_notify: i64` — for both `ProviderId::Codex` and
+  `ProviderId::Claude`.
+- This needs to be shared, mutable, thread-safe state reachable from tray
+  menu callbacks, the monitor's callbacks, and (later) IPC commands. Use
+  `tauri::Manager::manage()` with a `Mutex<AppState>` wrapped in `Arc` (or
+  however you find idiomatic in Tauri v2 — check the Tauri docs/examples if
+  unsure, this is the one place in this codebase that genuinely needs to
+  know about `tauri::AppHandle`).
+- Also port `prefsOf`/`stateOf`/`providerById` (trivial accessors) and
+  `pruneCooldowns` from `index.ts`.
+- Port `config:get`/`config:set`/`lang:get` as `#[tauri::command]`s in a new
+  `ipc.rs` (this will grow — just these three for now). `config:set`'s
+  merge logic in the original is intricate (patches `usageWidget` fields,
+  handles `alwaysOnTop`/`minimized`/`compactPosition` changes, restarts
+  monitors if `pollIntervalSec` changed, calls `applyLaunchAtLogin` if
+  `launchAtLogin` is in the patch) — for *this* slice, port the config-merge
+  logic itself faithfully, but anywhere it would currently call into window
+  code (`syncUsageWidget`, `applyWidgetMinimized`, etc.) or
+  `app.setLoginItemSettings`, stub it as a TODO call-out (a private no-op
+  fn with a `// TODO(window-layer):` comment is fine) — those need the
+  window layer / `tauri-plugin-autostart` that don't exist yet.
 
-4. **(Not your task yet)** A Tauri equivalent of `index.ts` (1534 lines):
-   tray + 7 windows + every `ipcMain` handler + the Windows-shell-specific
-   widget positioning logic, plus wiring the stubbed window-creation points
-   from #2 and #3. This needs its own scoping pass once #1-#3 land — flag
-   back rather than guessing at the module split yourself.
+Build `tray.rs`:
+- Port `buildMenu`, `refreshTray`, `showTrayMenu`, `trayMenuPosition`,
+  `bottomRightCompactWidgetRect` (this one needs the widget window's
+  bounds, which doesn't exist yet — stub it to return `None` for now, same
+  TODO-call-out approach), and the tray icon/tooltip refresh logic.
+- Use `tauri::tray::TrayIconBuilder` + `tauri::menu::{Menu, MenuItem,
+  CheckMenuItem, Submenu}` — the existing scaffold in `lib.rs` already
+  builds a minimal tray from Phase 0; replace/extend it here rather than
+  building a second one.
+- The language submenu (`langItem` in the original) needs radio-style menu
+  items — check Tauri's `CheckMenuItem`/`IconMenuItem` API for what's
+  available; if Tauri v2 doesn't have a native radio-menu-item type,
+  approximate with checkmarks (single-select enforced by your own click
+  handler) and note the approximation in the commit message.
 
-5. **(Not your task yet)** Renderer bridge (`window.rotator` shim backed by
-   `@tauri-apps/api` instead of `ipcRenderer`, one `<script>` tag added to
-   each of the 7 existing HTML files — do not rewrite the HTML files
-   themselves).
+Test what's testable without a real Tauri runtime (the pure math —
+`trayMenuPosition`'s clamping, `pruneCooldowns`, the config-merge logic
+minus the stubbed window calls) the same way you tested `app_notify.rs`.
+Wire what you can into `lib.rs`'s `setup()` hook. Run `cargo build --tests`
++ `cargo test`, commit, push — same process as before.
 
-6. **(Not your task yet)** Phase 6 (NSIS packaging parity, icon generation)
-   and Phase 7 (manual verification pass).
+## Not started yet (do not start these — future slices)
+
+- The 7 windows (manager, onboarding, widget, widget-settings, approval,
+  notify, cli-restart) and wiring the `ToastWindowFactory` /
+  `CliHandoverDeps` real implementations to them.
+- The rest of `ipc.rs` (`accounts:*`, `cli:testRestart`, `onboarding:finish`,
+  `open:url`, `manager:close`, `widget:*`, `widget-settings:close`).
+- The two genuine Win32 FFI spots (`WM_CONTEXTMENU` subclass hook,
+  no-activate topmost reassertion) — only relevant once the widget window
+  exists.
+- Renderer bridge (`window.rotator` shim, one `<script>` tag per HTML file).
+- Phase 6 (packaging) and Phase 7 (verification).
 
 ## Win32 FFI notes (what genuinely needs the `windows` crate vs. PowerShell)
 
