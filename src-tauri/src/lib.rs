@@ -1,6 +1,17 @@
+mod accounts;
+mod atomic_fs;
+mod codex_api;
 mod config;
+mod desktop;
+mod desktop_processes;
 mod i18n;
+mod login;
+mod monitor;
 mod paths;
+mod provider;
+mod provider_types;
+mod providers;
+mod switcher;
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
