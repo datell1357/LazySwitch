@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{App, AppHandle, Manager, PhysicalPosition, PhysicalRect, Runtime};
 
 use crate::app_state::AppState;
@@ -9,6 +9,7 @@ use crate::config;
 use crate::i18n::{resolve_lang, t};
 use crate::provider;
 use crate::provider_types::ProviderId;
+use crate::windows::{manager, onboarding};
 
 const TRAY_ID: &str = "main";
 const TRAY_MENU_WIDTH: i32 = 352;
@@ -207,8 +208,12 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
         app.exit(0);
         return;
     }
-    if id == "manage" || id == "tutorial" {
-        // TODO(window-layer): open the requested window.
+    if id == "manage" {
+        let _ = manager::open_manager(app);
+        return;
+    }
+    if id == "tutorial" {
+        let _ = onboarding::open_onboarding(app);
         return;
     }
 
@@ -263,8 +268,25 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
             "../../assets/tray.png"
         ))?)
         .menu(&menu)
-        .show_menu_on_left_click(true)
+        .show_menu_on_left_click(false)
         .on_menu_event(|app, event| handle_menu_event(app, event.id.as_ref()))
+        .on_tray_icon_event(|tray, event| match event {
+            TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            } => {
+                let _ = manager::open_manager(tray.app_handle());
+            }
+            TrayIconEvent::Click {
+                button: MouseButton::Right,
+                ..
+            } => {
+                // TODO(window-layer): Tauri's tray menu has no public
+                // screen-positioned popup API. Rewire this once the widget
+                // slice provides a native owner window for `popup_menu_at`.
+            }
+            _ => {}
+        })
         .build(app)?;
     refresh_tray(&handle).map_err(std::io::Error::other)?;
     Ok(())

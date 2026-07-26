@@ -25,6 +25,7 @@ mod providers;
 mod switcher;
 mod tray;
 mod tray_pin;
+mod windows;
 
 use std::sync::Mutex;
 
@@ -45,6 +46,25 @@ pub fn run() {
             let cfg = config::load_config(&config::config_path());
             app.manage(Mutex::new(app_state::AppState::new(cfg)));
             tray::setup(app)?;
+            let state = app.state::<Mutex<app_state::AppState>>();
+            let state = state
+                .lock()
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            let account_count = provider_types::ProviderId::ALL
+                .into_iter()
+                .map(|provider| provider::list_accounts(provider).len())
+                .sum();
+            let startup_window = windows::startup_window(state.cfg.onboarded, account_count);
+            drop(state);
+            match startup_window {
+                windows::StartupWindow::Manager => {
+                    windows::manager::open_manager(app.handle())?;
+                }
+                windows::StartupWindow::Onboarding => {
+                    windows::onboarding::open_onboarding(app.handle())?;
+                }
+                windows::StartupWindow::None => {}
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
