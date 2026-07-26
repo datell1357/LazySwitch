@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::config::{AppConfig, ProviderPrefs};
 use crate::monitor::{UsageMonitor, UsageSnapshot};
@@ -28,6 +28,7 @@ impl Default for ProviderState {
 
 pub struct AppState {
     pub cfg: AppConfig,
+    pub pending_usage_refreshes: HashSet<String>,
     codex: ProviderState,
     claude: ProviderState,
 }
@@ -36,6 +37,7 @@ impl AppState {
     pub fn new(cfg: AppConfig) -> Self {
         Self {
             cfg,
+            pending_usage_refreshes: HashSet::new(),
             codex: ProviderState::default(),
             claude: ProviderState::default(),
         }

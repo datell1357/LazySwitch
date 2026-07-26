@@ -15,6 +15,7 @@ mod desktop;
 mod desktop_processes;
 mod i18n;
 mod ipc;
+mod limit_handler;
 mod login;
 mod monitor;
 mod paths;
@@ -65,6 +66,8 @@ pub fn run() {
             )));
             tray::setup(app)?;
             ensure_live_enrolled();
+            tauri::async_runtime::block_on(async { limit_handler::wire_monitors(app.handle()) })
+                .map_err(std::io::Error::other)?;
             let state = app.state::<Mutex<app_state::AppState>>();
             let state = state
                 .lock()
@@ -91,6 +94,18 @@ pub fn run() {
             ipc::config_get,
             ipc::config_set,
             ipc::lang_get,
+            ipc::providers_list,
+            ipc::accounts_list,
+            ipc::accounts_switch,
+            ipc::accounts_set_enabled,
+            ipc::accounts_remove,
+            ipc::accounts_rename,
+            ipc::accounts_import_current,
+            ipc::accounts_add_via_login,
+            ipc::cli_test_restart,
+            ipc::onboarding_finish,
+            ipc::open_url,
+            ipc::manager_close,
             windows::approval::approval_respond,
             windows::cli_restart::cli_restart_payload,
             windows::cli_restart::cli_restart_respond,
