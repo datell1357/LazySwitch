@@ -44,16 +44,16 @@ module that claims to port it, to verify nothing has drifted.
   scoped to exactly the new file paths, and double check with `git status`
   afterward that nothing else got touched — `cargo fmt -- path/to/file.rs`
   in this workspace has repeatedly been observed to reformat the *entire*
-  crate instead of just that file (this has happened three times now), so
+  crate instead of just that file (this has happened four times now), so
   always verify before trusting it, and if it happens, stop and ask before
   restoring rather than committing through it.
 - **Environment note**: this machine's `cargo` sometimes can't reach the
-  crates.io index (certificate provider issue) and needs `--offline`. If you
-  hit this, prefer `--offline` over spending time debugging the network
-  issue. If `--offline` resolution downgrades/upgrades unrelated transitive
-  dependencies because the local registry cache is stale, it's fine to
-  accept that rather than hand-editing `Cargo.lock` — just note it in the
-  commit message.
+  crates.io index (certificate provider issue), but it's intermittent, not
+  persistent — try a normal online build first. If you hit the network
+  error, prefer `--offline` over spending time debugging it. If `--offline`
+  resolution downgrades/upgrades unrelated transitive dependencies because
+  the local registry cache is stale, it's fine to accept that rather than
+  hand-editing `Cargo.lock` — just note it in the commit message.
 - **Git worktree note**: this worktree's `.git` metadata lives in the main
   repo at `D:\Vibe Project\LazySwitch\.git\worktrees\claude_tauri\`, outside
   this worktree's own directory. Any git write (including `git restore`, not
@@ -109,10 +109,15 @@ module that claims to port it, to verify nothing has drifted.
   `tray.rs` — shared `Mutex<AppState>` via `app.manage()`, the tray icon/menu
   (checkmark-based language selection — Tauri v2 has no native radio menu
   item), `TODO(window-layer)` markers where window creation is still needed.
-- `windows/manager.rs`, `windows/onboarding.rs` — the first two of 7 windows.
-  Tray menu items and double-click now open them; startup onboarding-vs-
-  manager routing is wired into `lib.rs`.
-- 111 unit tests across these modules, all passing (`cargo test`) — verified
+- `windows/manager.rs`, `windows/onboarding.rs`, `windows/approval.rs`,
+  `windows/notify.rs`, `windows/cli_restart.rs` — 5 of the 7 windows. Tray
+  menu items and double-click open manager/onboarding; startup
+  onboarding-vs-manager routing is wired into `lib.rs`. `notify.rs` is the
+  real `ToastWindowFactory` implementation (extended that trait with
+  positioning/resizing methods) and `cli_restart.rs` is the real
+  `CliHandoverDeps` implementation (uses `arboard` for clipboard,
+  `tauri-plugin-notification` for native OS notifications).
+- 112 unit tests across these modules, all passing (`cargo test`) — verified
   independently, not just via your own report, at each step so far.
 
 **Known deferred item, not a bug**: tray right-click positioning
@@ -122,57 +127,79 @@ without a native owner window; a real window's `popup_menu_at` might work
 once one exists. Revisit once the widget window (always-on, unlike manager/
 onboarding) exists.
 
-## Current task — approval.rs, notify.rs, cli_restart.rs (remaining small windows)
+## Current task — widget.rs + widget_settings.rs, part 1: full mode only
 
-Three more windows, all smaller/simpler than the widget (which still comes
-last). These three specifically complete the dependency-injection seams
-already stubbed in earlier phases:
+Only the widget + widget-settings pair remains of the 7 windows —
+deliberately last since it's the most complex (compact/full modes, taskbar
+docking, save/restore bounds, two genuine Win32 FFI spots). It's being
+split into two slices. **This slice is full-mode only**: normal
+draggable/resizable window, always-on-top toggle, save/restore bounds, the
+settings popup. **Not** compact mode, **not** taskbar docking, **not** the
+Win32 FFI (context-menu hook, no-activate topmost) — those are part 2,
+dispatched after this lands.
 
-- **`windows/notify.rs`**: the real `ToastWindowFactory` implementation for
-  `app_notify.rs`, backed by an actual `WebviewWindowBuilder` pointed at
-  `src/renderer/notify.html`. Match the original `createToastWindow`'s
-  options (transparent, frameless, always-on-top, skip-taskbar,
-  `focusable: false`, `show: false` initially) and `positionToasts`'s
-  bounds-setting (`app_notify.rs`'s `toast_bounds` already computes the
-  positions — this file just needs to apply them to real windows and read
-  the real work area from Tauri's monitor API instead of a passed-in
-  `WorkArea` struct).
-- **`windows/approval.rs`**: the "restart Codex Desktop?" popup
-  (`askApproval` in `index.ts`) — this one doesn't have a pre-built
-  trait/seam from an earlier phase, so read `index.ts`'s `askApproval`
-  function directly and port it: a frameless/transparent/always-on-top
-  window loading `approval.html` with query-string params, resolving a
-  promise/future when the user responds or closes it.
-- **`windows/cli_restart.rs`**: the real `CliHandoverDeps` implementation
-  for `cli_handover.rs` — the `askRestart` popup loading `cli-restart.html`,
-  plus wiring `copy_to_clipboard` (check what clipboard crate/API is
-  available — Tauri has a clipboard plugin, or `arboard` directly) and
-  `notify` (should call into the real `notify.rs` toast window plus, per
-  the original's `notify()` helper in `index.ts`, also a native OS
-  notification via `tauri-plugin-notification` — check if that plugin is
-  already a dependency; if not, you'll need to add it).
+Read `src/main/index.ts`'s widget-related functions in full:
+`widgetDefaultBounds`, `clampWidgetBounds`, `restoreWidgetBounds`,
+`saveWidgetBounds`, `scheduleSaveWidgetBounds`, `openUsageWidgetWindow`
+(the parts relevant to normal/full mode — ignore the `minimized`/compact
+branches for now), `openWidgetSettings`, `closeUsageWidget`,
+`hasEnrolledAccounts`, `isOnboarding`, `syncUsageWidget`,
+`setUsageWidgetEnabled`. Also read `src/renderer/widget.html` and
+`src/renderer/widget-settings.html` (read-only).
 
-None of these three need new IPC handlers beyond what might be required for
-the popup's own response channel (`approval:respond`, `cli-restart:respond`,
-`app-notify:resize`/`dismiss` in the original — check `preload.ts` for the
-exact channel names/shapes, since the renderer bridge task later will need
-to match these exactly). Add `#[tauri::command]`s for those specifically
-(not the unrelated `accounts:*`/`config:*` ones, those come later).
+Build `windows/widget.rs`:
+- `open_usage_widget(app)`: mirrors `openUsageWidgetWindow` for the
+  non-minimized case only — build a `WebviewWindowBuilder` matching the
+  original's options (frameless, `skip_taskbar`, `always_on_top` per
+  config, resizable/movable, min size, background color from
+  `DEFAULT_WIDGET_BACKGROUND`), positioned via `restoreWidgetBounds`/
+  `widgetDefaultBounds`/`clampWidgetBounds` (port these as pure, testable
+  functions taking a `WorkArea`/display-bounds struct — same style as
+  `app_notify.rs`'s `toast_bounds` and `tray.rs`'s `tray_menu_position`).
+  Skip everything gated on `cfg.usageWidget.minimized` for now (compact
+  bounds, `applyWidgetMinimized`, `positionCompactWidget`, the topmost
+  reassertion timer, `hookWindowMessage`) — leave clear `TODO(widget-part2)`
+  markers.
+- `close_usage_widget(app)`: mirrors `closeUsageWidget` (save bounds, then
+  close) minus the compact-mode context-menu-unhook step.
+- `sync_usage_widget(app)`: mirrors `syncUsageWidget` — show/hide based on
+  `cfg.usageWidget.enabled && hasEnrolledAccounts() && !isOnboarding()`.
+  Wire this into the places that currently have
+  `// TODO(window-layer): sync usage widget` (onboarding's close handler,
+  the tray's `"usage-widget"` menu toggle in `tray.rs`) and into
+  `lib.rs`'s `setup()` after the equivalent of `ensureLiveEnrolled`'s
+  startup logic (check what's already wired vs. still a stub there).
+- Bounds saving: `moved`/`resized` window events -> debounce (400ms, same
+  as `scheduleSaveWidgetBounds`) -> `saveWidgetBounds` -> persist via
+  `config::save_config`. Use `tokio::time` for the debounce timer, or
+  whatever's idiomatic for a Tauri window event handler — your call.
 
-Test what's testable as pure logic (little new here beyond what's already
-tested — `app_notify.rs`'s math is already covered). Wire into `lib.rs`.
-`cargo build --tests` + `cargo test`, commit, push. Flag back if this turns
-out bigger than expected rather than pushing into the widget window
+Build `windows/widget_settings.rs`:
+- `open_widget_settings(app)` mirroring `openWidgetSettings` (centered
+  popup, frameless, always-on-top, fixed size).
+
+You'll need a couple more `#[tauri::command]`s for these windows' own
+needs (check `preload.ts` for `widget:close`, `widget-settings:close`,
+`widget:compact-height` — that last one is compact-mode-only, skip it for
+this slice). Don't implement the full `config:set` widget-related side
+effects yet if they'd require part-2 functionality (e.g. anything gated on
+`compactPosition`) — TODO-mark those.
+
+Test the pure bounds/clamping math the same way as before. `cargo build
+--tests` + `cargo test`, commit, push. Flag back if this is bigger than
+expected rather than continuing into part 2 (compact mode/Win32 FFI)
 unscoped.
 
-## Not started yet (do not start these — future slices, after approval/notify/cli-restart)
+## Not started yet (do not start these — future slices, after widget part 1)
 
-- The widget window — last and most complex: compact/full modes, save/
-  restore bounds, taskbar docking via tray-rect PowerShell query, taskbar
-  theme detection, the two genuine Win32 FFI spots (`WM_CONTEXTMENU` hook,
-  no-activate topmost reassertion), widget-settings window.
+- Widget part 2: compact mode, taskbar docking (tray-rect PowerShell
+  query + taskbar theme detection, already described as "port the
+  PowerShell verbatim" in the Win32 FFI notes below), the two genuine
+  Win32 FFI spots (`WM_CONTEXTMENU` hook, no-activate topmost reassertion),
+  the widget's own right-click context menu (`showWidgetContextMenu`).
 - The rest of `ipc.rs` (`accounts:*`, `cli:testRestart`, `onboarding:finish`,
-  `open:url`, `manager:close`, `widget:*`, `widget-settings:close`).
+  `open:url`, `manager:close`, the remaining `config:set` widget side
+  effects).
 - `tauri-plugin-autostart` wiring for `launchAtLogin`.
 - Renderer bridge (`window.rotator` shim, one `<script>` tag per HTML file).
 - Phase 6 (packaging) and Phase 7 (verification).
@@ -188,8 +215,8 @@ caller to Rust + `powershell.rs`. You do **not** need raw Rust FFI for those.
 
 The two things that genuinely have no PowerShell/Electron-API equivalent
 and need the `windows` crate + a raw `HWND` (obtainable from a Tauri
-`WebviewWindow` via its `hwnd()` method on Windows) — **only relevant once
-the widget window is being built, not the current task**:
+`WebviewWindow` via its `hwnd()` method on Windows) — **only relevant for
+widget part 2, not the current task**:
 
 1. **`WM_CONTEXTMENU` hook** (`win.hookWindowMessage` in the widget window).
    Needs `SetWindowSubclass`/window-proc subclassing.
