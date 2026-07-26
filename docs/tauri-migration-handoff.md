@@ -117,74 +117,101 @@ final wiring step once all the pieces exist. Minor nit if you touch
 the file after the `#[cfg(test)]` block — harmless but move them to the top
 next time you're in there.
 
-## Current task — app_state.rs + tray.rs (first slice of the index.ts port)
+## Done — app_state.rs, ipc.rs, tray.rs (first index.ts slice)
 
-The full `index.ts` port (tray + 7 windows + every IPC handler + widget
-Win32 positioning) is too large for one dispatch. This is the **first
-slice only** — state management and the tray icon/menu, with **no window
-creation yet**. Don't go beyond this scope; flag back when it's done rather
-than continuing into the window layer unscoped.
+Committed as `ecf57d6`, 108 tests passing (independently re-verified).
+Good pattern worth continuing: `Mutex<AppState>` via `app.manage()`,
+checkmark-based language menu (no native radio item in Tauri v2 — correct
+call), `TODO(window-layer)` markers exactly where window creation would
+otherwise be needed.
 
-Build `app_state.rs`:
-- A struct mirroring `index.ts`'s module-level mutable state: `cfg:
-  AppConfig` (already loaded/saved via `config.rs`), and a per-provider
-  `PState` equivalent — `monitor: Option<UsageMonitor>`, `last_usage:
-  Option<UsageSnapshot>`, `cooling_down: HashMap<String, i64>` (name ->
-  epoch ms), `switching: bool`, `handling_limit: bool`,
-  `last_no_account_notify: i64` — for both `ProviderId::Codex` and
-  `ProviderId::Claude`.
-- This needs to be shared, mutable, thread-safe state reachable from tray
-  menu callbacks, the monitor's callbacks, and (later) IPC commands. Use
-  `tauri::Manager::manage()` with a `Mutex<AppState>` wrapped in `Arc` (or
-  however you find idiomatic in Tauri v2 — check the Tauri docs/examples if
-  unsure, this is the one place in this codebase that genuinely needs to
-  know about `tauri::AppHandle`).
-- Also port `prefsOf`/`stateOf`/`providerById` (trivial accessors) and
-  `pruneCooldowns` from `index.ts`.
-- Port `config:get`/`config:set`/`lang:get` as `#[tauri::command]`s in a new
-  `ipc.rs` (this will grow — just these three for now). `config:set`'s
-  merge logic in the original is intricate (patches `usageWidget` fields,
-  handles `alwaysOnTop`/`minimized`/`compactPosition` changes, restarts
-  monitors if `pollIntervalSec` changed, calls `applyLaunchAtLogin` if
-  `launchAtLogin` is in the patch) — for *this* slice, port the config-merge
-  logic itself faithfully, but anywhere it would currently call into window
-  code (`syncUsageWidget`, `applyWidgetMinimized`, etc.) or
-  `app.setLoginItemSettings`, stub it as a TODO call-out (a private no-op
-  fn with a `// TODO(window-layer):` comment is fine) — those need the
-  window layer / `tauri-plugin-autostart` that don't exist yet.
+**One thing to fix in the next slice, not now-done code to redo**: the
+tray's click behavior isn't wired to match the original yet —
+`show_menu_on_left_click(true)` shows the menu on left-click via Tauri's
+built-in mechanism, but the original specifically used *right*-click for
+the context menu (positioned via the custom `trayMenuPosition`/
+`popUpContextMenu`, not the OS default position) and *double*-click to open
+the manager window. `tray_menu_position` is implemented and tested but not
+actually called from anywhere yet. Wire this up properly once the manager
+window exists (next task) — set `show_menu_on_left_click(false)`, handle
+double-click to open the manager, and handle right-click by computing
+`tray_menu_position` (you'll need the tray icon's rect and the primary
+monitor's work area from Tauri's APIs, plus the widget's rect once it
+exists later) and popping the menu at that computed position rather than
+Tauri's default.
 
-Build `tray.rs`:
-- Port `buildMenu`, `refreshTray`, `showTrayMenu`, `trayMenuPosition`,
-  `bottomRightCompactWidgetRect` (this one needs the widget window's
-  bounds, which doesn't exist yet — stub it to return `None` for now, same
-  TODO-call-out approach), and the tray icon/tooltip refresh logic.
-- Use `tauri::tray::TrayIconBuilder` + `tauri::menu::{Menu, MenuItem,
-  CheckMenuItem, Submenu}` — the existing scaffold in `lib.rs` already
-  builds a minimal tray from Phase 0; replace/extend it here rather than
-  building a second one.
-- The language submenu (`langItem` in the original) needs radio-style menu
-  items — check Tauri's `CheckMenuItem`/`IconMenuItem` API for what's
-  available; if Tauri v2 doesn't have a native radio-menu-item type,
-  approximate with checkmarks (single-select enforced by your own click
-  handler) and note the approximation in the commit message.
+## Current task — manager.rs + onboarding.rs (first two windows)
 
-Test what's testable without a real Tauri runtime (the pure math —
-`trayMenuPosition`'s clamping, `pruneCooldowns`, the config-merge logic
-minus the stubbed window calls) the same way you tested `app_notify.rs`.
-Wire what you can into `lib.rs`'s `setup()` hook. Run `cargo build --tests`
-+ `cargo test`, commit, push — same process as before.
+The 7-window layer is being built one or two windows at a time, simplest
+first. This slice is exactly: the account manager window and the
+first-run onboarding window. **Not** the widget (most complex — Win32 FFI,
+compact-mode positioning, save/restore bounds — gets its own dedicated
+slice later) and **not** the other 4 windows yet.
 
-## Not started yet (do not start these — future slices)
+Read `src/main/index.ts`'s `openManager`/`openOnboarding` functions and the
+renderer files `src/renderer/manager.html` + `src/renderer/onboarding.html`
+(read-only — do not edit the HTML) to understand what each window needs
+from the backend.
 
-- The 7 windows (manager, onboarding, widget, widget-settings, approval,
-  notify, cli-restart) and wiring the `ToastWindowFactory` /
-  `CliHandoverDeps` real implementations to them.
+Build `windows/manager.rs` and `windows/onboarding.rs` (new `windows/`
+directory under `src-tauri/src/`, add `mod windows;` with a `pub mod
+manager; pub mod onboarding;` in `windows/mod.rs`):
+
+- Each should have an `open_manager(app: &AppHandle)` / `open_onboarding(app:
+  &AppHandle)` function that: if the window already exists (by label — use
+  Tauri's `app.get_webview_window("manager")` / `"onboarding"`), restore/
+  show/focus it (mirroring `if (managerWin && !managerWin.isDestroyed())`
+  in the original); otherwise build one with `WebviewWindowBuilder`
+  matching the original's `BrowserWindow` options (width/height/resizable/
+  frame:false/title/backgroundColor — check the exact values in
+  `index.ts`), pointing at the existing HTML file (`manager.html` /
+  `onboarding.html` — the frontend is untouched, still plain HTML/JS; don't
+  worry about the `window.rotator` bridge not existing yet, that's a
+  separate later task, the window should still open and load the page even
+  though the page's JS calls will fail silently until the bridge exists).
+  Match the original's "force-show once ready" `ready-to-show` handling.
+- `onboarding`'s close handler needs to call back into syncing the usage
+  widget (`syncUsageWidget()` in the original) — that widget doesn't exist
+  yet, so stub it as `TODO(window-layer): sync usage widget` same as
+  before.
+- Wire `tray.rs`'s `"manage"` and `"tutorial"` menu-item handlers (currently
+  `TODO(window-layer)` stubs) to call `open_manager`/`open_onboarding`.
+- Wire the tray's double-click behavior to open the manager (see the "one
+  thing to fix" note above) — this is the natural point to do that since
+  the manager window now exists.
+- `app.whenReady()`'s onboarding-vs-manager decision at startup (`if
+  (!cfg.onboarded) openOnboarding(); else if (total < 2) openManager();`)
+  should also get wired into `lib.rs`'s `setup()` now.
+
+You do not need to implement the manager's or onboarding's IPC handlers
+yet (`accounts:list`, `accounts:switch`, `onboarding:finish`, etc.) — those
+belong in a later `ipc.rs` expansion pass once more of the window layer
+exists. Getting the windows to *open* correctly (with the tray wiring) is
+this slice's job; the pages will render but most buttons on them won't do
+anything yet, and that's expected at this stage.
+
+Same process as always: test what's testable without a real window (little
+to test here beyond maybe a pure "should we show onboarding or manager at
+startup" decision function — extract that as testable pure logic if you
+can), `cargo build --tests` + `cargo test`, commit, push. Flag back if this
+turns out bigger than expected rather than plowing into windows #3-7
+unscoped.
+
+## Not started yet (do not start these — future slices, after manager+onboarding)
+
+- The widget window (compact/full modes, save/restore bounds, taskbar
+  docking via tray-rect PowerShell query, taskbar theme detection, the two
+  genuine Win32 FFI spots — `WM_CONTEXTMENU` hook and no-activate topmost
+  reassertion).
+- widget-settings, approval, notify, cli-restart windows (wiring the
+  `ToastWindowFactory`/`CliHandoverDeps` real implementations to notify/
+  cli-restart specifically).
 - The rest of `ipc.rs` (`accounts:*`, `cli:testRestart`, `onboarding:finish`,
   `open:url`, `manager:close`, `widget:*`, `widget-settings:close`).
-- The two genuine Win32 FFI spots (`WM_CONTEXTMENU` subclass hook,
-  no-activate topmost reassertion) — only relevant once the widget window
-  exists.
-- Renderer bridge (`window.rotator` shim, one `<script>` tag per HTML file).
+- `tauri-plugin-autostart` wiring for `launchAtLogin`.
+- Renderer bridge (`window.rotator` shim, one `<script>` tag per HTML file)
+  — needed before any of these windows' pages actually do anything, but not
+  before they at least *open*.
 - Phase 6 (packaging) and Phase 7 (verification).
 
 ## Win32 FFI notes (what genuinely needs the `windows` crate vs. PowerShell)
@@ -192,15 +219,14 @@ Wire what you can into `lib.rs`'s `setup()` hook. Run `cargo build --tests`
 Most of `index.ts`'s Windows-shell logic **already shells out to
 PowerShell** in the original (tray icon rect via `FindWindowW`/
 `GetWindowRect` C# Add-Type, taskbar theme via registry `Get-ItemProperty`,
-and `tray-pin.ts`'s registry promotion). Port those the same way as
-`desktop_processes.rs` — keep the PowerShell script text, change the caller
-to Rust + `powershell.rs`. You do **not** need raw Rust FFI for those,
-including `tray_pin.rs` (task #1 above).
+and `tray-pin.ts`'s registry promotion, already ported this way). Port any
+remaining ones the same way — keep the PowerShell script text, change the
+caller to Rust + `powershell.rs`. You do **not** need raw Rust FFI for those.
 
 The two things that genuinely have no PowerShell/Electron-API equivalent
 and need the `windows` crate + a raw `HWND` (obtainable from a Tauri
-`WebviewWindow` via its `hwnd()` method on Windows) — **relevant only for
-task #4, not your current tasks**:
+`WebviewWindow` via its `hwnd()` method on Windows) — **only relevant once
+the widget window is being built, not the current task**:
 
 1. **`WM_CONTEXTMENU` hook** (`win.hookWindowMessage` in the widget window).
    Needs `SetWindowSubclass`/window-proc subclassing.
@@ -220,8 +246,8 @@ Rust-porting scope, the Tauri app still needs *some* copy of the compiled
 `dist/main/cli.js` (+ its dependency closure) sitting next to the installed
 binary, referenced via Tauri's `app.path().resource_dir()` instead of
 Electron's `__dirname`. Not your task right now (only relevant once you
-wire `cli_hooks.rs` into actual app startup, which is task #4 territory) —
-flag it back when you get there rather than deciding unilaterally; the user
+wire `cli_hooks.rs` into actual app startup) — flag it back when you get
+there rather than deciding unilaterally; the user
 should weigh in on alternatives (e.g. shipping the CLI as a genuinely
 separate npm package).
 
