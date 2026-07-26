@@ -1,7 +1,9 @@
 mod accounts;
+mod app_notify;
 mod atomic_fs;
 mod claude_sessions;
 mod cli_cwd_script;
+mod cli_handover;
 mod cli_hooks;
 mod cli_resume_routing;
 mod cli_sessions;
@@ -19,6 +21,7 @@ mod provider;
 mod provider_types;
 mod providers;
 mod switcher;
+mod tray_pin;
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
