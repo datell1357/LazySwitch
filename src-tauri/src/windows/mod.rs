@@ -1,4 +1,7 @@
+pub mod approval;
+pub mod cli_restart;
 pub mod manager;
+pub mod notify;
 pub mod onboarding;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

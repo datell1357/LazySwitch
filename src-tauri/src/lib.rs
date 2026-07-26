@@ -34,6 +34,7 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -45,6 +46,13 @@ pub fn run() {
 
             let cfg = config::load_config(&config::config_path());
             app.manage(Mutex::new(app_state::AppState::new(cfg)));
+            app.manage(Mutex::new(windows::approval::ApprovalRuntime::default()));
+            app.manage(Mutex::new(
+                windows::cli_restart::CliRestartRuntime::default(),
+            ));
+            app.manage(Mutex::new(windows::notify::NotifyRuntime::new(
+                app.handle().clone(),
+            )));
             tray::setup(app)?;
             let state = app.state::<Mutex<app_state::AppState>>();
             let state = state
@@ -70,7 +78,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ipc::config_get,
             ipc::config_set,
-            ipc::lang_get
+            ipc::lang_get,
+            windows::approval::approval_respond,
+            windows::cli_restart::cli_restart_payload,
+            windows::cli_restart::cli_restart_respond,
+            windows::notify::app_notify_payload,
+            windows::notify::app_notify_resize,
+            windows::notify::app_notify_dismiss
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

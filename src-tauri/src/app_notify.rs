@@ -7,7 +7,8 @@ pub const MAX_HEIGHT: i32 = 160;
 pub const VISIBLE_LIMIT: usize = 4;
 const STACK_GAP: i32 = 10;
 const WORK_AREA_MARGIN: i32 = 18;
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppNotifyPayload {
     pub title: String,
     pub body: String,
@@ -31,6 +32,8 @@ pub struct Bounds {
 pub trait ToastWindowFactory {
     fn create(&mut self, payload: &AppNotifyPayload) -> Result<ToastWindowId, String>;
     fn is_destroyed(&self, id: ToastWindowId) -> bool;
+    fn work_area(&self) -> Result<WorkArea, String>;
+    fn apply_bounds(&self, bounds: &[(ToastWindowId, Bounds)]) -> Result<(), String>;
 }
 #[derive(Debug)]
 struct ActiveToast {
@@ -84,6 +87,7 @@ impl ToastState {
             return;
         }
         self.show_now(payload, windows);
+        self.position(windows);
     }
 
     pub fn drain(&mut self, app_quitting: bool, windows: &mut impl ToastWindowFactory) {
@@ -98,6 +102,7 @@ impl ToastState {
             };
             self.show_now(payload, windows);
         }
+        self.position(windows);
     }
 
     pub fn remove(&mut self, id: u64, app_quitting: bool, windows: &mut impl ToastWindowFactory) {
@@ -111,6 +116,13 @@ impl ToastState {
         if let Some(toast) = self.active.iter_mut().find(|toast| toast.id == id) {
             toast.height = clamp_height(height);
         }
+    }
+
+    pub fn position(&self, windows: &impl ToastWindowFactory) {
+        let Ok(work_area) = windows.work_area() else {
+            return;
+        };
+        let _ = windows.apply_bounds(&self.bounds(work_area));
     }
 
     pub fn bounds(&self, work_area: WorkArea) -> Vec<(ToastWindowId, Bounds)> {
@@ -238,6 +250,19 @@ mod tests {
 
         fn is_destroyed(&self, id: ToastWindowId) -> bool {
             self.destroyed.contains(&id)
+        }
+
+        fn work_area(&self) -> Result<WorkArea, String> {
+            Ok(WorkArea {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            })
+        }
+
+        fn apply_bounds(&self, _bounds: &[(ToastWindowId, Bounds)]) -> Result<(), String> {
+            Ok(())
         }
     }
 
