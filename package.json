@@ -16,6 +16,8 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/cli": "^2.11.4",
     "@types/node": "^22.0.0",
     "electron": "^33.0.0",
     "electron-builder": "^25.0.0",
