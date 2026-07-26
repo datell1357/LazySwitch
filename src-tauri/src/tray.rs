@@ -9,7 +9,7 @@ use crate::config;
 use crate::i18n::{resolve_lang, t};
 use crate::provider;
 use crate::provider_types::ProviderId;
-use crate::windows::{manager, onboarding};
+use crate::windows::{manager, onboarding, widget};
 
 const TRAY_ID: &str = "main";
 const TRAY_MENU_WIDTH: i32 = 352;
@@ -235,7 +235,6 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
         }
         "usage-widget" => {
             state.cfg.usage_widget.enabled = !state.cfg.usage_widget.enabled;
-            // TODO(window-layer): create or close the usage widget.
         }
         language_id => {
             let Some((_, language)) = LANGUAGE_IDS
@@ -251,6 +250,9 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
         return;
     }
     drop(state);
+    if id == "usage-widget" {
+        let _ = widget::sync_usage_widget(app);
+    }
     let _ = refresh_tray(app);
 }
 

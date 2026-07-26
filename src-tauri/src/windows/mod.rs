@@ -3,6 +3,8 @@ pub mod cli_restart;
 pub mod manager;
 pub mod notify;
 pub mod onboarding;
+pub mod widget;
+pub mod widget_settings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartupWindow {

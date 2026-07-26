@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use serde_json::Value;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use crate::app_state::AppState;
 use crate::config::{self, AppConfig, CompactPosition};
@@ -51,14 +51,17 @@ pub fn config_get(state: State<'_, Mutex<AppState>>) -> Result<AppConfig, String
 }
 
 #[tauri::command]
-pub fn config_set(state: State<'_, Mutex<AppState>>, patch: Value) -> Result<AppConfig, String> {
+pub fn config_set(
+    app: AppHandle,
+    state: State<'_, Mutex<AppState>>,
+    patch: Value,
+) -> Result<AppConfig, String> {
     let mut state = state.lock().map_err(|error| error.to_string())?;
     let previous = state.cfg.clone();
     let next = merge_config(&previous, &patch)?;
 
-    // TODO(window-layer): capture bounds before minimizing, then synchronize
-    // widget visibility, compact positioning, and always-on-top state.
-    sync_usage_widget_stub(&previous, &next, &patch);
+    // TODO(widget-part2): capture bounds before minimizing and synchronize
+    // compact positioning when minimized/compactPosition changes.
     // TODO(window-layer): restart provider monitors when pollIntervalSec changes.
     restart_monitors_stub(&previous, &next);
     // TODO(window-layer): apply launch-at-login via tauri-plugin-autostart.
@@ -66,6 +69,19 @@ pub fn config_set(state: State<'_, Mutex<AppState>>, patch: Value) -> Result<App
 
     config::save_config(&config::config_path(), &next).map_err(|error| error.to_string())?;
     state.cfg = next.clone();
+    drop(state);
+
+    if previous.usage_widget.always_on_top != next.usage_widget.always_on_top {
+        if let Some(window) = app.get_webview_window("usage-widget") {
+            window
+                .set_always_on_top(next.usage_widget.always_on_top)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    if previous.usage_widget.enabled != next.usage_widget.enabled {
+        crate::windows::widget::sync_usage_widget(&app)?;
+        crate::tray::refresh_tray(&app)?;
+    }
     Ok(next)
 }
 
@@ -81,8 +97,6 @@ pub fn lang_get(state: State<'_, Mutex<AppState>>) -> Result<&'static str, Strin
         })
         .map_err(|error| error.to_string())
 }
-
-fn sync_usage_widget_stub(_previous: &AppConfig, _next: &AppConfig, _patch: &Value) {}
 
 fn restart_monitors_stub(_previous: &AppConfig, _next: &AppConfig) {}
 

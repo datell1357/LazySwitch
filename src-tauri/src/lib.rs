@@ -31,6 +31,16 @@ use std::sync::Mutex;
 
 use tauri::Manager;
 
+fn ensure_live_enrolled() {
+    for provider_id in provider_types::ProviderId::ALL {
+        if provider::has_live_auth(provider_id)
+            && provider::active_account_name(provider_id).is_none()
+        {
+            let _ = provider::import_current(provider_id, None);
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -54,6 +64,7 @@ pub fn run() {
                 app.handle().clone(),
             )));
             tray::setup(app)?;
+            ensure_live_enrolled();
             let state = app.state::<Mutex<app_state::AppState>>();
             let state = state
                 .lock()
@@ -73,6 +84,7 @@ pub fn run() {
                 }
                 windows::StartupWindow::None => {}
             }
+            windows::widget::sync_usage_widget(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -84,7 +96,9 @@ pub fn run() {
             windows::cli_restart::cli_restart_respond,
             windows::notify::app_notify_payload,
             windows::notify::app_notify_resize,
-            windows::notify::app_notify_dismiss
+            windows::notify::app_notify_dismiss,
+            windows::widget::widget_close,
+            windows::widget_settings::widget_settings_close
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

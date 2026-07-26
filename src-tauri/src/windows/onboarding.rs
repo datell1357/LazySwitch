@@ -4,6 +4,8 @@ use tauri::{
     WebviewWindowBuilder, WindowEvent,
 };
 
+use crate::windows::widget;
+
 const LABEL: &str = "onboarding";
 
 fn restore_show_focus<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
@@ -34,11 +36,12 @@ pub fn open_onboarding<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewW
         })
         .build()?;
 
-    window.on_window_event(|event| {
+    let event_app = app.clone();
+    window.on_window_event(move |event| {
         if matches!(event, WindowEvent::Destroyed) {
-            // TODO(window-layer): sync usage widget.
+            let _ = widget::sync_usage_widget(&event_app);
         }
     });
-    // TODO(window-layer): sync usage widget while onboarding is open.
+    widget::sync_usage_widget(app).map_err(std::io::Error::other)?;
     Ok(window)
 }
