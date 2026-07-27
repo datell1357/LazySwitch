@@ -2,6 +2,12 @@
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
 
+  if (window.location.pathname.endsWith("/widget.html")) {
+    document.addEventListener("DOMContentLoaded", () => {
+      document.querySelector(".titlebar")?.setAttribute("data-tauri-drag-region", "deep");
+    });
+  }
+
   window.rotator = {
     respond: (approved) => invoke("approval_respond", { approved }),
     cliRestartPayload: () => invoke("cli_restart_payload"),
