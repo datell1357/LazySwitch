@@ -80,8 +80,11 @@ pub fn broadcast_changed(app: &AppHandle<Wry>) {
             let _ = window.emit("accounts:changed", ());
         }
     }
-    let _ = crate::windows::widget::sync_usage_widget(app);
-    let _ = crate::tray::refresh_tray(app);
+    let refresh_app = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let _ = crate::windows::widget::sync_usage_widget(&refresh_app);
+        let _ = crate::tray::refresh_tray(&refresh_app);
+    });
 }
 
 fn monitor_callbacks(app: &AppHandle<Wry>, provider_id: ProviderId, monitor: &mut UsageMonitor) {
