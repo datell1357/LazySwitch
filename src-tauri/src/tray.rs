@@ -221,6 +221,7 @@ fn handle_menu_event(app: &AppHandle<Wry>, id: &str) {
     let Ok(mut state) = state.lock() else {
         return;
     };
+    let mut launch_at_login = None;
     match id {
         "auto-approve" => state.cfg.codex.auto_approve = !state.cfg.codex.auto_approve,
         "codex-auto-restart" => {
@@ -231,7 +232,7 @@ fn handle_menu_event(app: &AppHandle<Wry>, id: &str) {
         }
         "start-at-login" => {
             state.cfg.launch_at_login = !state.cfg.launch_at_login;
-            // TODO(window-layer): apply via tauri-plugin-autostart.
+            launch_at_login = Some(state.cfg.launch_at_login);
         }
         "usage-widget" => {
             state.cfg.usage_widget.enabled = !state.cfg.usage_widget.enabled;
@@ -250,6 +251,9 @@ fn handle_menu_event(app: &AppHandle<Wry>, id: &str) {
         return;
     }
     drop(state);
+    if let Some(enabled) = launch_at_login {
+        crate::ipc::apply_launch_at_login(app, enabled);
+    }
     if id == "usage-widget" {
         let _ = widget::sync_usage_widget(app);
     }

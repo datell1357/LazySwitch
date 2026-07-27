@@ -98,12 +98,11 @@ via `limit_handler::broadcast_changed`), `widget:taskbar-theme` (to
 core function (usage monitoring -> auto-switch) actually works now.
 
 **Known deferred items, not bugs**: tray right-click positioning
-(`tray_menu_position`, implemented/tested, never called — no Tauri API for
-a screen-positioned tray popup without a native owner window);
+(`tray_menu_position`, implemented/tested, never called — Tauri v2's
+`popup_menu_at` is relative to an existing owner window, but this tray-only app
+does not guarantee that any window exists when the tray is clicked);
 `cli_hooks::install_hooks` never called (blocked on the `cli.js`
-resource-path decision, Phase 6); `tauri-plugin-autostart` for
-`launchAtLogin` not wired (`apply_launch_at_login_stub` is a deliberate
-no-op).
+resource-path decision, Phase 6).
 
 ## Current task — the renderer bridge
 

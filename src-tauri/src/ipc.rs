@@ -3,6 +3,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, Wry};
+use tauri_plugin_autostart::ManagerExt;
 
 use crate::app_state::AppState;
 use crate::cli_handover;
@@ -103,13 +104,13 @@ pub fn config_set(
     }
     let restart_monitors = previous.codex.poll_interval_sec != next.codex.poll_interval_sec
         || previous.claude.poll_interval_sec != next.claude.poll_interval_sec;
-    // TODO(window-layer): apply launch-at-login via tauri-plugin-autostart.
-    apply_launch_at_login_stub(&previous, &next, &patch);
-
     config::save_config(&config::config_path(), &next).map_err(|error| error.to_string())?;
     state.cfg = next.clone();
     drop(state);
 
+    if previous.launch_at_login != next.launch_at_login {
+        apply_launch_at_login(&app, next.launch_at_login);
+    }
     if previous.usage_widget.always_on_top != next.usage_widget.always_on_top {
         if let Some(window) = app.get_webview_window("usage-widget") {
             window
@@ -155,7 +156,14 @@ pub fn lang_get(state: State<'_, Mutex<AppState>>) -> Result<&'static str, Strin
         .map_err(|error| error.to_string())
 }
 
-fn apply_launch_at_login_stub(_previous: &AppConfig, _next: &AppConfig, _patch: &Value) {}
+pub(crate) fn apply_launch_at_login<R: tauri::Runtime>(app: &AppHandle<R>, enabled: bool) {
+    let manager = app.autolaunch();
+    let _ = if enabled {
+        manager.enable()
+    } else {
+        manager.disable()
+    };
+}
 
 #[tauri::command]
 pub fn providers_list() -> Vec<ProviderSummary> {

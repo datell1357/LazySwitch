@@ -45,6 +45,7 @@ fn ensure_live_enrolled() {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::Builder::new().arg("--hidden").build())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -56,6 +57,7 @@ pub fn run() {
             }
 
             let cfg = config::load_config(&config::config_path());
+            ipc::apply_launch_at_login(app.handle(), cfg.launch_at_login);
             app.manage(Mutex::new(app_state::AppState::new(cfg)));
             app.manage(Mutex::new(windows::approval::ApprovalRuntime::default()));
             app.manage(Mutex::new(
@@ -95,7 +97,11 @@ pub fn run() {
                 .into_iter()
                 .map(|provider| provider::list_accounts(provider).len())
                 .sum();
-            let startup_window = windows::startup_window(state.cfg.onboarded, account_count);
+            let startup_window = if std::env::args_os().any(|arg| arg == "--hidden") {
+                windows::StartupWindow::None
+            } else {
+                windows::startup_window(state.cfg.onboarded, account_count)
+            };
             drop(state);
             match startup_window {
                 windows::StartupWindow::Manager => {
